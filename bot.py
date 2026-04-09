@@ -3,11 +3,20 @@ from telebot import types
 import sqlite3
 from datetime import datetime
 import re
+import os
+from flask import Flask
+from threading import Thread
 
-bot = telebot.TeleBot('8674899234:AAHiTxxApptnOi33lXEDNh7L0MyEzO7PcWo')
-CHAT_ID = -5107882990  # ID чата админов
+# ========== КОНФИГУРАЦИЯ ==========
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN не найден! Добавьте переменную окружения BOT_TOKEN")
 
-# ID администраторов, которые могут банить
+CHAT_ID = -5107882990  # ID чата админов (без #, просто число)
+
+bot = telebot.TeleBot(BOT_TOKEN)
+
+# ID администраторов
 ADMINS = [6206017016, 1176412025]
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
