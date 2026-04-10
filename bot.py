@@ -181,7 +181,6 @@ def ask_send_mode(user_id):
 # ========== ОБРАБОТКА АЛЬБОМОВ (МЕДИАГРУПП) ==========
 
 @bot.message_handler(content_types=['text'], func=lambda message: message.chat.type == 'private')
-@bot.message_handler(content_types=['text'], func=lambda message: message.chat.type == 'private')
 def handle_text_message(message):
     user_id = message.from_user.id
     
