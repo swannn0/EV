@@ -246,54 +246,56 @@ def send_text_if_no_media(user_id):
         message_to_user[sent_msg.message_id] = user_id
 
 @bot.message_handler(content_types=['photo', 'video', 'audio', 'document'], func=lambda message: message.chat.type == 'private')
-def handle_media_group(message):
+# Хранилище для медиа по времени
+user_media_temp = {}
+user_media_timer = {}
+
+@bot.message_handler(content_types=['photo', 'video', 'audio', 'document'], func=lambda message: message.chat.type == 'private')
+def handle_media(message):
     user_id = message.from_user.id
     
-    # Проверка на бан
     if is_banned(user_id):
         ban_info = get_ban_info(user_id)
         reason = ban_info[2] if ban_info else "не указана"
-        bot.reply_to(message, f"🚫 ʙы зᴀбᴀнᴇны\n\nʙы нᴇ ʍожᴇᴛᴇ оᴛᴨᴩᴀʙᴧяᴛь ᴄообщᴇния ᴀдʍиниᴄᴛᴩᴀᴛоᴩᴀʍ.\n\nᴨᴩичинᴀ: {reason}", parse_mode='HTML')
+        bot.reply_to(message, f"🚫 Вы забанены\nПричина: {reason}", parse_mode='HTML')
         return
     
-    # Проверяем, выбрал ли пользователь режим
-    if user_id not in user_choice:
-        # Если нет выбора, но есть сохранённый текст — используем его режим
-        if user_id not in user_last_text:
-            ask_send_mode(user_id)
-            return
-        else:
-            mode = user_last_text[user_id]['mode']
-            user_choice[user_id] = mode
-    
-    # Если это медиагруппа (альбом)
-    if message.media_group_id:
-        # Сохраняем сообщение в временное хранилище
-        if message.media_group_id not in temp_albums:
-            temp_albums[message.media_group_id] = []
-            # Устанавливаем таймер на 2 секунды для сбора всех фото
-            import threading
-            timer = threading.Timer(2.0, process_album, args=[message.media_group_id, user_id])
-            timer.start()
-        
-        temp_albums[message.media_group_id].append(message)
+    if user_id not in user_choice and user_id not in user_last_text:
+        ask_send_mode(user_id)
         return
     
-    # Если не альбом — обрабатываем как обычное медиа
-    process_single_media(message, user_id)
+    # Сбрасываем старый таймер
+    if user_id in user_media_timer:
+        user_media_timer[user_id].cancel()
+    
+    # Добавляем медиа в хранилище
+    if user_id not in user_media_temp:
+        user_media_temp[user_id] = []
+    user_media_temp[user_id].append(message)
+    
+    # Устанавливаем новый таймер на 1.5 секунды
+    import threading
+    timer = threading.Timer(1.5, process_collected_media, args=[user_id])
+    user_media_timer[user_id] = timer
+    timer.start()
 
-def process_album(media_group_id, user_id):
-    """Обрабатывает собранный альбом"""
-    if media_group_id not in temp_albums:
+def process_collected_media(user_id):
+    if user_id not in user_media_temp:
         return
     
-    messages = temp_albums[media_group_id]
-    del temp_albums[media_group_id]
+    messages = user_media_temp[user_id]
+    del user_media_temp[user_id]
+    if user_id in user_media_timer:
+        del user_media_timer[user_id]
     
-    if not messages:
-        return
-    
-    # Берём режим из user_choice или из сохранённого текста
+    if len(messages) == 1:
+        process_single_media(messages[0], user_id)
+    else:
+        # Несколько медиа за 1.5 секунды — обрабатываем как альбом
+        process_multiple_as_album(messages, user_id)
+
+def process_multiple_as_album(messages, user_id):
+    """Обрабатывает несколько медиа как альбом"""
     if user_id in user_choice:
         mode = user_choice[user_id]
         del user_choice[user_id]
@@ -305,7 +307,6 @@ def process_album(media_group_id, user_id):
     user_name = messages[0].from_user.first_name
     username = messages[0].from_user.username
     
-    # Получаем сохранённый текст (подпись)
     caption_text = ""
     if user_id in user_last_text:
         caption_text = user_last_text[user_id]['text']
@@ -315,24 +316,17 @@ def process_album(media_group_id, user_id):
             username = user_last_text[user_id]['username']
         del user_last_text[user_id]
     
-    # Создаём кнопку профиля
     markup = None
     if mode == 'public' and username:
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("👤 Профиль", url=f"https://t.me/{username}"))
     
-    # Формируем текст отправителя
     if mode == 'public':
         sender_text = f"📩 Отправитель: {user_name}\n🆔 ID: {user_id}"
     else:
         sender_text = "👤 Отправитель: Аноним\n🆔 ID: скрыт"
     
-    # Формируем полную подпись
-    full_caption = f"{sender_text}\n📎 <b>Альбом ({len(messages)} файлов)</b>"
-    if caption_text:
-        full_caption += f"\n\n📝 <b>Текст:</b> {caption_text}"
-    
-    # Собираем все медиа в список для отправки альбомом
+    # Собираем медиагруппу
     media_group = []
     for msg in messages:
         if msg.photo:
@@ -345,23 +339,18 @@ def process_album(media_group_id, user_id):
             media_group.append(types.InputMediaDocument(msg.document.file_id))
     
     if media_group:
-        # Отправляем альбом в чат админов
         try:
-            bot.send_media_group(
-                CHAT_ID,
-                media_group,
-                caption=full_caption[:1024],  # Telegram ограничение 1024 символа
-                parse_mode='HTML'
-            )
+            bot.send_media_group(CHAT_ID, media_group)
+            full_caption = f"{sender_text}\n📎 <b>Альбом ({len(media_group)} файлов)</b>"
+            if caption_text:
+                full_caption += f"\n\n📝 <b>Текст:</b> {caption_text}"
+            bot.send_message(CHAT_ID, full_caption, parse_mode='HTML', reply_markup=markup)
         except Exception as e:
-            # Если не удалось отправить альбомом, отправляем по одному
             for msg in messages:
                 process_single_media(msg, user_id)
     
-    # Подтверждение пользователю
     try:
-        bot.send_message(user_id, 
-            f"⤿ ᴀᴧьбᴏʍ иɜ {len(media_group)} ɸᴀйᴧᴏʙ ᴏᴛᴨᴩᴀʙᴧᴇн {'публично' if mode == 'public' else 'анонимно'}!\n\nдᴏбᴀʙьᴛᴇ ᴨᴏдᴨиᴄь ᴋ ᴀᴧьбᴏʍу ʙ ᴛᴇчᴇниᴇ 3 ᴄᴇᴋунд")
+        bot.send_message(user_id, f"⤿ ᴀᴧьбᴏʍ иɜ {len(media_group)} ɸᴀйᴧᴏʙ ᴏᴛᴨᴩᴀʙᴧᴇн {'публично' if mode == 'public' else 'анонимно'}!\n\nдᴏбᴀʙьᴛᴇ ᴨᴏдᴨиᴄь ᴋ ᴀᴧьбᴏʍу ʙ ᴛᴇчᴇниᴇ 3 ᴄᴇᴋунд")
     except:
         pass
 
