@@ -244,7 +244,16 @@ def send_text_if_no_media(user_id):
     
     if sent_msg:
         message_to_user[sent_msg.message_id] = user_id
-
+    
+    # ========== ДОБАВЛЯЕМ ПОДТВЕРЖДЕНИЕ ПОЛЬЗОВАТЕЛЮ ==========
+    try:
+        mode_text = "публично" if mode == 'public' else "анонимно"
+        bot.send_message(
+            user_id,
+            f"✅ Ваше сообщение отправлено {mode_text}!\n\nКогда администратор ответит, вы получите уведомление."
+        )
+    except Exception as e:
+        print(f"Ошибка отправки подтверждения: {e}")
 @bot.message_handler(content_types=['photo', 'video', 'audio', 'document'], func=lambda message: message.chat.type == 'private')
 def handle_media(message):
     user_id = message.from_user.id
