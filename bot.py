@@ -266,23 +266,22 @@ def send_text_if_no_media(user_id):
 def handle_media(message):
     user_id = message.from_user.id
     
-    # ========== ОТМЕНЯЕМ ТАЙМЕР ТЕКСТА ==========
-    if user_id in user_text_timer:  # ← user_text_timer, не user_media_timer!
+    # Отменяем таймер ТЕКСТА (чтобы не было двойной отправки)
+    if user_id in user_text_timer:
         user_text_timer[user_id].cancel()
         del user_text_timer[user_id]
-    # ============================================
     
     if is_banned(user_id):
         ban_info = get_ban_info(user_id)
         reason = ban_info[2] if ban_info else "не указана"
-        bot.reply_to(message, f"🚫 ʙы зᴀбᴀнᴇны\n\nʙы нᴇ ʍожᴇᴛᴇ оᴛᴨᴩᴀʙᴧяᴛь ᴄообщᴇния ᴀдʍиниᴄᴛᴩᴀᴛоᴩᴀʍ.\n\nᴨᴩичинᴀ: {reason}", parse_mode='HTML')
+        bot.reply_to(message, f"🚫 Вы забанены...", parse_mode='HTML')
         return
     
     if user_id not in user_choice and user_id not in user_last_text:
         ask_send_mode(user_id)
         return
     
-    # Сбрасываем старый таймер
+    # Сбрасываем старый таймер МЕДИА
     if user_id in user_media_timer:
         user_media_timer[user_id].cancel()
     
