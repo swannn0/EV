@@ -580,4 +580,5 @@ def banlist_all(call):
 if __name__ == '__main__':
     print("✅ Бот запущен!")
     print(f"📢 Чат админов: {CHAT_ID}")
+    bot.remove_webhook()
     bot.infinity_polling()
