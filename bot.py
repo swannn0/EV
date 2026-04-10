@@ -267,9 +267,9 @@ def handle_media(message):
     user_id = message.from_user.id
     
     # ========== ОТМЕНЯЕМ ТАЙМЕР ТЕКСТА ==========
-    if user_id in user_media_timer:
-        user_media_timer[user_id].cancel()
-        del user_media_timer[user_id]
+    if user_id in user_text_timer:  # ← user_text_timer, не user_media_timer!
+        user_text_timer[user_id].cancel()
+        del user_text_timer[user_id]
     # ============================================
     
     if is_banned(user_id):
