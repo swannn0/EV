@@ -252,7 +252,7 @@ def handle_media(message):
     if is_banned(user_id):
         ban_info = get_ban_info(user_id)
         reason = ban_info[2] if ban_info else "не указана"
-        bot.reply_to(message, f"🚫 Вы забанены\nПричина: {reason}", parse_mode='HTML')
+        bot.reply_to(message, f"🚫 ʙы зᴀбᴀнᴇны\n\nʙы нᴇ ʍожᴇᴛᴇ оᴛᴨᴩᴀʙᴧяᴛь ᴄообщᴇния ᴀдʍиниᴄᴛᴩᴀᴛоᴩᴀʍ.\n\nᴨᴩичинᴀ: {reason}", parse_mode='HTML')
         return
     
     if user_id not in user_choice and user_id not in user_last_text:
@@ -302,6 +302,7 @@ def process_multiple_as_album(messages, user_id):
     user_name = messages[0].from_user.first_name
     username = messages[0].from_user.username
     
+    # Получаем сохранённый текст (подпись)
     caption_text = ""
     if user_id in user_last_text:
         caption_text = user_last_text[user_id]['text']
@@ -311,6 +312,7 @@ def process_multiple_as_album(messages, user_id):
             username = user_last_text[user_id]['username']
         del user_last_text[user_id]
     
+    # Создаём кнопку профиля
     markup = None
     if mode == 'public' and username:
         markup = types.InlineKeyboardMarkup()
@@ -321,31 +323,64 @@ def process_multiple_as_album(messages, user_id):
     else:
         sender_text = "👤 Отправитель: Аноним\n🆔 ID: скрыт"
     
-    # Собираем медиагруппу
-    media_group = []
-    for msg in messages:
+    # Отправляем каждое фото/видео отдельно, но первое — с подписью
+    for i, msg in enumerate(messages):
         if msg.photo:
-            media_group.append(types.InputMediaPhoto(msg.photo[-1].file_id))
+            if i == 0 and caption_text:
+                # Первое фото — с подписью
+                bot.send_photo(
+                    CHAT_ID,
+                    msg.photo[-1].file_id,
+                    caption=f"{sender_text}\n📎 <b>Альбом ({len(messages)} файлов)</b>\n\n📝 <b>Текст:</b> {caption_text}",
+                    parse_mode='HTML',
+                    reply_markup=markup
+                )
+            else:
+                # Остальные фото — без подписи
+                bot.send_photo(CHAT_ID, msg.photo[-1].file_id)
+        
         elif msg.video:
-            media_group.append(types.InputMediaVideo(msg.video.file_id))
+            if i == 0 and caption_text:
+                # Первое видео — с подписью
+                bot.send_video(
+                    CHAT_ID,
+                    msg.video.file_id,
+                    caption=f"{sender_text}\n📎 <b>Альбом ({len(messages)} файлов)</b>\n\n📝 <b>Текст:</b> {caption_text}",
+                    parse_mode='HTML',
+                    reply_markup=markup
+                )
+            else:
+                # Остальные видео — без подписи
+                bot.send_video(CHAT_ID, msg.video.file_id)
+        
         elif msg.audio:
-            media_group.append(types.InputMediaAudio(msg.audio.file_id))
+            if i == 0 and caption_text:
+                bot.send_audio(
+                    CHAT_ID,
+                    msg.audio.file_id,
+                    caption=f"{sender_text}\n📎 <b>Альбом ({len(messages)} файлов)</b>\n\n📝 <b>Текст:</b> {caption_text}",
+                    parse_mode='HTML',
+                    reply_markup=markup
+                )
+            else:
+                bot.send_audio(CHAT_ID, msg.audio.file_id)
+        
         elif msg.document:
-            media_group.append(types.InputMediaDocument(msg.document.file_id))
+            file_name = msg.document.file_name if msg.document.file_name else "Документ"
+            if i == 0 and caption_text:
+                bot.send_document(
+                    CHAT_ID,
+                    msg.document.file_id,
+                    caption=f"{sender_text}\n📎 <b>Альбом ({len(messages)} файлов)</b>\n\n📝 <b>Текст:</b> {caption_text}",
+                    parse_mode='HTML',
+                    reply_markup=markup
+                )
+            else:
+                bot.send_document(CHAT_ID, msg.document.file_id)
     
-    if media_group:
-        try:
-            bot.send_media_group(CHAT_ID, media_group)
-            full_caption = f"{sender_text}\n📎 <b>Альбом ({len(media_group)} файлов)</b>"
-            if caption_text:
-                full_caption += f"\n\n📝 <b>Текст:</b> {caption_text}"
-            bot.send_message(CHAT_ID, full_caption, parse_mode='HTML', reply_markup=markup)
-        except Exception as e:
-            for msg in messages:
-                process_single_media(msg, user_id)
-    
+    # Подтверждение пользователю
     try:
-        bot.send_message(user_id, f"⤿ ᴀᴧьбᴏʍ иɜ {len(media_group)} ɸᴀйᴧᴏʙ ᴏᴛᴨᴩᴀʙᴧᴇн {'публично' if mode == 'public' else 'анонимно'}!\n\nдᴏбᴀʙьᴛᴇ ᴨᴏдᴨиᴄь ᴋ ᴀᴧьбᴏʍу ʙ ᴛᴇчᴇниᴇ 3 ᴄᴇᴋунд")
+        bot.send_message(user_id, f"⤿ ᴀᴧьбᴏʍ иɜ {len(messages)} ɸᴀйᴧᴏʙ ᴏᴛᴨᴩᴀʙᴧᴇн {'ᴨубᴧично' if mode == 'public' else 'ᴀнониʍно'}!\n\nᴋоᴦдᴀ ᴀдʍиниᴄᴛᴩᴀᴛоᴩ оᴛʙᴇᴛиᴛ, ʙы ᴨоᴧучиᴛᴇ уʙᴇдоʍᴧᴇниᴇ.")
     except:
         pass
 
@@ -455,13 +490,17 @@ def process_single_media(message, user_id):
     if sent_msg:
         message_to_user[sent_msg.message_id] = user_id
     
-    # Подтверждение пользователю
+    # ========== ПОДТВЕРЖДЕНИЕ ПОЛЬЗОВАТЕЛЮ ==========
     try:
-        bot.send_message(user_id, 
-            f"⤿ ᴄообщᴇниᴇ оᴛᴨᴩᴀʙᴧᴇно {'ᴨубᴧично' if mode == 'public' else 'ᴀнониʍно'}!")
-    except:
-        pass
-
+        mode_text = "ᴨубᴧично" if mode == 'public' else "ᴀнониʍно"
+        bot.send_message(
+            user_id, 
+            f"⤿ ᴄообщᴇниᴇ оᴛᴨᴩᴀʙᴧᴇно {mode_text}!\n\nᴋоᴦдᴀ ᴀдʍиниᴄᴛᴩᴀᴛоᴩ оᴛʙᴇᴛиᴛ, ʙы ᴨоᴧучиᴛᴇ уʙᴇдоʍᴧᴇниᴇ."
+        )
+        print(f"Подтверждение отправлено пользователю {user_id}")  # Для диагностики в логах
+    except Exception as e:
+        print(f"Ошибка отправки подтверждения пользователю {user_id}: {e}")
+        
 # ========== ОБРАБОТЧИК ВЫБОРА РЕЖИМА ==========
 @bot.callback_query_handler(func=lambda call: call.data.startswith('mode_'))
 def handle_mode_choice(call):
@@ -636,7 +675,7 @@ def reply_to_user_by_quoting(message):
             
             bot.send_message(
                 user_id,
-                f"✉️ <b>Ответ администратора:</b>\n\n{message.text}",
+                f"✉️ <b>оᴛʙᴇᴛ оᴛ ᴀдʍиниᴄᴛᴩᴀᴛоᴩᴀ:</b>\n\n{message.text}",
                 parse_mode='HTML'
             )
             bot.reply_to(message, f"✅ Ответ отправлен пользователю")
