@@ -22,6 +22,9 @@ ADMINS = [6206017016, 1176412025]
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 message_to_user = {}  # {message_id: user_id}
 user_choice = {}      # {user_id: mode}
+user_last_text = {}   # {user_id: {'text': str, 'mode': str, 'user_name': str, 'username': str}}
+user_media_temp = {}  # {user_id: [list of messages]}
+user_media_timer = {} # {user_id: timer}
 
 # ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('bans.db', check_same_thread=False)
@@ -174,9 +177,6 @@ def ask_send_mode(user_id):
     )
 
 # ========== ОБРАБОТКА АЛЬБОМОВ (МЕДИАГРУПП) ==========
-# Временное хранилище для альбомов
-temp_albums = {}  # {media_group_id: [list of messages]}
-user_last_text = {}  # {user_id: {'text': str, 'mode': str, 'user_name': str, 'username': str}}
 
 @bot.message_handler(content_types=['text'], func=lambda message: message.chat.type == 'private')
 def handle_text_message(message):
@@ -244,11 +244,6 @@ def send_text_if_no_media(user_id):
     
     if sent_msg:
         message_to_user[sent_msg.message_id] = user_id
-
-@bot.message_handler(content_types=['photo', 'video', 'audio', 'document'], func=lambda message: message.chat.type == 'private')
-# Хранилище для медиа по времени
-user_media_temp = {}
-user_media_timer = {}
 
 @bot.message_handler(content_types=['photo', 'video', 'audio', 'document'], func=lambda message: message.chat.type == 'private')
 def handle_media(message):
