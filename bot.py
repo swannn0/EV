@@ -181,19 +181,15 @@ def ask_send_mode(user_id):
 # ========== ОБРАБОТКА АЛЬБОМОВ (МЕДИАГРУПП) ==========
 
 @bot.message_handler(content_types=['text'], func=lambda message: message.chat.type == 'private')
+@bot.message_handler(content_types=['text'], func=lambda message: message.chat.type == 'private')
 def handle_text_message(message):
     user_id = message.from_user.id
-    # Устанавливаем таймер на 3 секунды
-    import threading
-    timer = threading.Timer(5.0, send_text_if_no_media, args=[user_id])
-    user_text_timer[user_id] = timer
-    timer.start()
     
     # Проверка на бан
     if is_banned(user_id):
         ban_info = get_ban_info(user_id)
         reason = ban_info[2] if ban_info else "не указана"
-        bot.reply_to(message, f"🚫 ʙы зᴀбᴀнᴇны\n\nʙы нᴇ ʍожᴇᴛᴇ оᴛᴨᴩᴀʙᴧяᴛь ᴄообщᴇния ᴀдʍиниᴄᴛᴩᴀᴛоᴩᴀʍ.\n\nᴨᴩичинᴀ: {reason}", parse_mode='HTML')
+        bot.reply_to(message, f"🚫 ʙы зᴀбᴀнᴇны...", parse_mode='HTML')
         return
     
     # Проверяем, выбрал ли пользователь режим
@@ -201,7 +197,7 @@ def handle_text_message(message):
         ask_send_mode(user_id)
         return
     
-    # Сохраняем текст для возможного альбома (ждём 3 секунды)
+    # Сохраняем текст для возможного альбома
     user_last_text[user_id] = {
         'text': message.text,
         'mode': user_choice[user_id],
@@ -212,15 +208,22 @@ def handle_text_message(message):
     # Убираем выбор режима
     del user_choice[user_id]
     
-    # Устанавливаем таймер на 3 секунды
+    # Устанавливаем ОДИН таймер (например, 5 секунд)
     import threading
-    timer = threading.Timer(3.0, send_text_if_no_media, args=[user_id])
+    timer = threading.Timer(5.0, send_text_if_no_media, args=[user_id])
+    user_text_timer[user_id] = timer
     timer.start()
-
+    
 def send_text_if_no_media(user_id):
     # Очищаем таймер
     if user_id in user_text_timer:
-    del user_text_timer[user_id]
+        del user_text_timer[user_id]
+    
+    if user_id not in user_last_text:
+        return
+    
+    data = user_last_text[user_id]
+    del user_last_text[user_id]
   
     
     mode = data['mode']
@@ -259,6 +262,7 @@ def send_text_if_no_media(user_id):
         )
     except Exception as e:
         print(f"Ошибка отправки подтверждения: {e}")
+        
 @bot.message_handler(content_types=['photo', 'video', 'audio', 'document'], func=lambda message: message.chat.type == 'private')
 def handle_media(message):
     user_id = message.from_user.id
