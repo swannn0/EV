@@ -12,7 +12,7 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден! Добавьте переменную окружения BOT_TOKEN")
 
-CHAT_ID = -5107882990  # ID чата админов (без #, просто число)
+CHAT_ID = -1003723055728  # ID чата админов (без #, просто число)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
