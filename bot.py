@@ -25,6 +25,7 @@ user_choice = {}      # {user_id: mode}
 user_last_text = {}   # {user_id: {'text': str, 'mode': str, 'user_name': str, 'username': str}}
 user_media_temp = {}  # {user_id: [list of messages]}
 user_media_timer = {} # {user_id: timer}
+user_text_timer = {}  # {user_id: timer}
 
 # ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('bans.db', check_same_thread=False)
@@ -182,6 +183,11 @@ def ask_send_mode(user_id):
 @bot.message_handler(content_types=['text'], func=lambda message: message.chat.type == 'private')
 def handle_text_message(message):
     user_id = message.from_user.id
+    # Устанавливаем таймер на 3 секунды
+    import threading
+    timer = threading.Timer(5.0, send_text_if_no_media, args=[user_id])
+    user_text_timer[user_id] = timer
+    timer.start()
     
     # Проверка на бан
     if is_banned(user_id):
@@ -212,12 +218,10 @@ def handle_text_message(message):
     timer.start()
 
 def send_text_if_no_media(user_id):
-    """Если за 3 секунды не пришло медиа — отправляем текст как есть"""
-    if user_id not in user_last_text:
-        return
-    
-    data = user_last_text[user_id]
-    del user_last_text[user_id]
+    # Очищаем таймер
+    if user_id in user_text_timer:
+    del user_text_timer[user_id]
+  
     
     mode = data['mode']
     user_name = data['user_name']
@@ -258,6 +262,12 @@ def send_text_if_no_media(user_id):
 @bot.message_handler(content_types=['photo', 'video', 'audio', 'document'], func=lambda message: message.chat.type == 'private')
 def handle_media(message):
     user_id = message.from_user.id
+    
+    # ========== ОТМЕНЯЕМ ТАЙМЕР ТЕКСТА ==========
+    if user_id in user_media_timer:
+        user_media_timer[user_id].cancel()
+        del user_media_timer[user_id]
+    # ============================================
     
     if is_banned(user_id):
         ban_info = get_ban_info(user_id)
