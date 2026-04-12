@@ -209,7 +209,6 @@ def handle_text_message(message):
     del user_choice[user_id]
     
     # Устанавливаем ОДИН таймер (например, 5 секунд)
-    import threading
     timer = threading.Timer(5.0, send_text_if_no_media, args=[user_id])
     user_text_timer[user_id] = timer
     timer.start()
@@ -292,7 +291,6 @@ def handle_media(message):
     user_media_temp[user_id].append(message)
     
     # Устанавливаем новый таймер на 1.5 секунды
-    import threading
     timer = threading.Timer(1.5, process_collected_media, args=[user_id])
     user_media_timer[user_id] = timer
     timer.start()
@@ -346,64 +344,39 @@ def process_multiple_as_album(messages, user_id):
     else:
         sender_text = "👤 Отправитель: Аноним\n🆔 ID: скрыт"
     
-    # Отправляем каждое фото/видео отдельно, но первое — с подписью
-    for i, msg in enumerate(messages):
+    # Собираем ВСЕ медиа в одну медиагруппу (альбом)
+    media_group = []
+    for msg in messages:
         if msg.photo:
-            if i == 0 and caption_text:
-                # Первое фото — с подписью
-                bot.send_photo(
-                    CHAT_ID,
-                    msg.photo[-1].file_id,
-                    caption=f"{sender_text}\n📎 <b>Альбом ({len(messages)} файлов)</b>\n\n📝 <b>Текст:</b> {caption_text}",
-                    parse_mode='HTML',
-                    reply_markup=markup
-                )
-            else:
-                # Остальные фото — без подписи
-                bot.send_photo(CHAT_ID, msg.photo[-1].file_id)
-        
+            media_group.append(types.InputMediaPhoto(msg.photo[-1].file_id))
         elif msg.video:
-            if i == 0 and caption_text:
-                # Первое видео — с подписью
-                bot.send_video(
-                    CHAT_ID,
-                    msg.video.file_id,
-                    caption=f"{sender_text}\n📎 <b>Альбом ({len(messages)} файлов)</b>\n\n📝 <b>Текст:</b> {caption_text}",
-                    parse_mode='HTML',
-                    reply_markup=markup
-                )
-            else:
-                # Остальные видео — без подписи
-                bot.send_video(CHAT_ID, msg.video.file_id)
-        
+            media_group.append(types.InputMediaVideo(msg.video.file_id))
         elif msg.audio:
-            if i == 0 and caption_text:
-                bot.send_audio(
-                    CHAT_ID,
-                    msg.audio.file_id,
-                    caption=f"{sender_text}\n📎 <b>Альбом ({len(messages)} файлов)</b>\n\n📝 <b>Текст:</b> {caption_text}",
-                    parse_mode='HTML',
-                    reply_markup=markup
-                )
-            else:
-                bot.send_audio(CHAT_ID, msg.audio.file_id)
-        
+            media_group.append(types.InputMediaAudio(msg.audio.file_id))
         elif msg.document:
-            file_name = msg.document.file_name if msg.document.file_name else "Документ"
-            if i == 0 and caption_text:
-                bot.send_document(
-                    CHAT_ID,
-                    msg.document.file_id,
-                    caption=f"{sender_text}\n📎 <b>Альбом ({len(messages)} файлов)</b>\n\n📝 <b>Текст:</b> {caption_text}",
-                    parse_mode='HTML',
-                    reply_markup=markup
-                )
-            else:
-                bot.send_document(CHAT_ID, msg.document.file_id)
+            media_group.append(types.InputMediaDocument(msg.document.file_id))
+    
+    if media_group:
+        # Отправляем альбом ОДНИМ сообщением
+        try:
+            bot.send_media_group(CHAT_ID, media_group)
+            
+            # Отправляем оформление ОТДЕЛЬНЫМ сообщением (Telegram не поддерживает caption у альбомов с HTML)
+            info_text = f"{sender_text}\n📎 <b>Альбом ({len(media_group)} файлов)</b>"
+            if caption_text:
+                info_text += f"\n\n📝 <b>Текст:</b> {caption_text}"
+            
+            bot.send_message(CHAT_ID, info_text, parse_mode='HTML', reply_markup=markup)
+            
+        except Exception as e:
+            print(f"Ошибка отправки альбома: {e}")
+            # Если не удалось отправить альбомом, отправляем по одному
+            for msg in messages:
+                process_single_media(msg, user_id)
     
     # Подтверждение пользователю
     try:
-        bot.send_message(user_id, f"⤿ ᴀᴧьбᴏʍ иɜ {len(messages)} ɸᴀйᴧᴏʙ ᴏᴛᴨᴩᴀʙᴧᴇн {'ᴨубᴧично' if mode == 'public' else 'ᴀнониʍно'}!\n\nᴋоᴦдᴀ ᴀдʍиниᴄᴛᴩᴀᴛоᴩ оᴛʙᴇᴛиᴛ, ʙы ᴨоᴧучиᴛᴇ уʙᴇдоʍᴧᴇниᴇ.")
+        bot.send_message(user_id, f"⤿ Альбом из {len(media_group)} файлов отправлен {'публично' if mode == 'public' else 'анонимно'}!\n\nКогда администратор ответит, вы получите уведомление.")
     except:
         pass
 
@@ -771,6 +744,10 @@ def unban_from_button(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "banlist_all")
 def banlist_all(call):
+    # Проверка прав
+    if call.from_user.id not in ADMINS:
+        bot.answer_callback_query(call.id, "⛔ Нет прав", show_alert=True)
+        return
     bans = get_all_bans()
     
     if not bans:
