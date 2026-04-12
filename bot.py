@@ -27,7 +27,12 @@ ADMINS = [6206017016, 1176412025]
 message_to_user = {}  # {message_id: user_id}
 user_pending_content = {}  # {user_id: {'type': 'text'/'media'/'album', 'data': ...}}
 
-# ========== БАЗА ДАННЫХ ==========
+# ========== БАЗА ДАННЫХ НА ДИСКЕ RENDER ==========
+# Путь к постоянному диску Render
+DATA_DIR = '/opt/render/project/src/data'
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, 'bans.db')
+
 # Используем отдельное соединение для каждого потока
 db_connections = {}
 db_lock = threading.Lock()
@@ -36,7 +41,7 @@ def get_db_connection():
     """Получает соединение с БД для текущего потока"""
     thread_id = threading.get_ident()
     if thread_id not in db_connections:
-        conn = sqlite3.connect('bans.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)  # ← ИСПОЛЬЗУЕМ DB_PATH
         # Настройка для многопоточности
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
@@ -731,9 +736,8 @@ def info(message):
         bot.reply_to(message, f"🆔 ID этого чата: {message.chat.id}")
 
 
-# ============== КОМАНДА ПАМЯТИ
+# ============== КОМАНДА ПАМЯТИ ==============
 
-# Добавьте команды:
 @bot.message_handler(commands=['memory'])
 def memory_info(message):
     if message.chat.id != CHAT_ID or message.from_user.id not in ADMINS:
@@ -742,14 +746,19 @@ def memory_info(message):
     process = psutil.Process(os.getpid())
     mem_info = process.memory_info()
     
+    # Проверяем наличие базы данных
+    db_exists = os.path.exists(DB_PATH)
+    db_size = os.path.getsize(DB_PATH) if db_exists else 0
+    
     text = f"📊 <b>Память бота</b>\n"
     text += f"RSS: {mem_info.rss / 1024 / 1024:.1f} MB\n"
     text += f"Кэш сообщений: {len(message_to_user)}\n"
     text += f"Ожидание режима: {len(user_pending_content)}\n"
-    text += f"Сбор альбомов: {len(album_collector)}"
+    text += f"Сбор альбомов: {len(album_collector)}\n"
+    text += f"БД bans.db: {db_size / 1024:.1f} KB ({'✅' if db_exists else '❌'})"
     
     markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🧹 Очистить", callback_data="clear_memory"))
+    markup.add(types.InlineKeyboardButton("🧹 Очистить память", callback_data="clear_memory"))
     
     bot.reply_to(message, text, parse_mode='HTML', reply_markup=markup)
 
@@ -758,6 +767,10 @@ def clear_memory_callback(call):
     if call.from_user.id not in ADMINS:
         bot.answer_callback_query(call.id, "⛔ Нет прав")
         return
+    
+    before_message = len(message_to_user)
+    before_pending = len(user_pending_content)
+    before_album = len(album_collector)
     
     message_to_user.clear()
     user_pending_content.clear()
@@ -768,9 +781,23 @@ def clear_memory_callback(call):
                 collector['timer'].cancel()
         album_collector.clear()
     
+    # Закрываем неиспользуемые соединения с БД
+    for thread_id, conn in list(db_connections.items()):
+        try:
+            conn.close()
+        except:
+            pass
+    db_connections.clear()
+    
     gc.collect()
     
     bot.answer_callback_query(call.id, "✅ Память очищена")
+    bot.edit_message_text(
+        call.message.text + f"\n\n✅ <b>Память очищена!</b>\n• Кэш сообщений: {before_message} → 0\n• Ожидание: {before_pending} → 0\n• Альбомы: {before_album} → 0",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode='HTML'
+    )
 
 # ========== ОТВЕТ АДМИНИСТРАТОРА ==========
 @bot.message_handler(func=lambda m: m.chat.id == CHAT_ID and m.reply_to_message)
@@ -905,5 +932,6 @@ keep_alive()
 if __name__ == '__main__':
     print("✅ Бот запущен!")
     print(f"📢 Чат админов: {CHAT_ID}")
+    print(f"💾 База данных: {DB_PATH}")
     bot.remove_webhook()
     bot.infinity_polling()
