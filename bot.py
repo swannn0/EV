@@ -23,7 +23,6 @@ ADMINS = [6206017016, 1176412025]
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 message_to_user = {}  # {message_id: user_id}
-user_mode = {}        # {user_id: mode}
 user_pending_content = {}  # {user_id: {'type': 'text'/'media'/'album', 'data': ...}}
 
 # ========== БАЗА ДАННЫХ ==========
@@ -202,6 +201,9 @@ def handle_text_message(message):
     ask_send_mode(user_id, content_data)
 
 # ========== ОБРАБОТКА МЕДИА (включая альбомы) ==========
+# Словарь для сбора альбомов
+album_collector = {}  # {user_id: {'messages': [], 'timer': None, 'caption': None}}
+
 @bot.message_handler(content_types=['photo', 'video', 'audio', 'document', 'voice', 'sticker'], func=lambda message: message.chat.type == 'private')
 def handle_media(message):
     user_id = message.from_user.id
@@ -214,25 +216,24 @@ def handle_media(message):
     
     # Определяем, часть ли это альбома
     if message.media_group_id:
-        # Это альбом — ждём сбора всех частей
-        if user_id not in user_pending_content:
-            user_pending_content[user_id] = {'type': 'album_collecting', 'messages': [], 'timer': None}
+        # Это альбом — собираем части
+        if user_id not in album_collector:
+            album_collector[user_id] = {'messages': [], 'timer': None, 'caption': None}
         
-        pending = user_pending_content[user_id]
-        if pending['type'] != 'album_collecting':
-            # Если уже есть что-то другое — начинаем новый сбор
-            user_pending_content[user_id] = {'type': 'album_collecting', 'messages': [], 'timer': None}
-            pending = user_pending_content[user_id]
+        collector = album_collector[user_id]
+        collector['messages'].append(message)
         
-        pending['messages'].append(message)
+        # Сохраняем подпись, если есть
+        if message.caption and not collector['caption']:
+            collector['caption'] = message.caption
         
         # Сбрасываем таймер
-        if pending['timer']:
-            pending['timer'].cancel()
+        if collector['timer']:
+            collector['timer'].cancel()
         
-        # Устанавливаем новый таймер
-        timer = threading.Timer(1.0, finish_album_collection, args=[user_id])
-        pending['timer'] = timer
+        # Устанавливаем новый таймер на 1.5 секунды (больше времени для больших альбомов)
+        timer = threading.Timer(1.5, finish_album_collection, args=[user_id])
+        collector['timer'] = timer
         timer.start()
     else:
         # Одиночное медиа — сразу спрашиваем режим
@@ -247,14 +248,16 @@ def handle_media(message):
 
 def finish_album_collection(user_id):
     """Вызывается когда альбом собран"""
-    if user_id not in user_pending_content:
+    if user_id not in album_collector:
         return
     
-    pending = user_pending_content[user_id]
-    if pending['type'] != 'album_collecting':
-        return
+    collector = album_collector[user_id]
+    messages = collector['messages']
+    caption = collector['caption']
     
-    messages = pending['messages']
+    # Очищаем коллектор
+    del album_collector[user_id]
+    
     if not messages:
         return
     
@@ -262,6 +265,7 @@ def finish_album_collection(user_id):
     content_data = {
         'type': 'album',
         'messages': messages,
+        'caption': caption,  # Сохраняем подпись
         'user_name': messages[0].from_user.first_name,
         'username': messages[0].from_user.username,
         'user_id': user_id
@@ -278,6 +282,12 @@ def handle_mode_choice(call):
     if mode == 'cancel':
         if user_id in user_pending_content:
             del user_pending_content[user_id]
+        # Также очищаем альбомный коллектор, если есть
+        if user_id in album_collector:
+            collector = album_collector[user_id]
+            if collector['timer']:
+                collector['timer'].cancel()
+            del album_collector[user_id]
         bot.edit_message_text(
             "ᴛᴇᴨᴇᴩь ʙы ᴄнᴏʙᴀ ʍᴏжᴇᴛᴇ ᴏᴛᴨᴩᴀʙᴧяᴛь ᴄᴏᴏбщᴇния.\n\n❌ ᴏᴛᴨᴩᴀʙᴋᴀ ᴄᴏᴏбщᴇния ᴏᴛʍᴇнᴇнᴀ.",
             call.message.chat.id,
@@ -448,6 +458,7 @@ def send_album_to_admins(data, mode):
     user_name = data['user_name']
     username = data['username']
     messages = data['messages']
+    caption = data.get('caption', '')  # Получаем сохранённую подпись
     
     markup = None
     if mode == 'public' and username:
@@ -459,41 +470,44 @@ def send_album_to_admins(data, mode):
     else:
         sender_text = "👤 <b>Отправитель:</b> Аноним\n🆔 ID: скрыт"
     
-    # Собираем подписи из первого сообщения с caption
-    caption_text = ""
-    for msg in messages:
-        if msg.caption:
-            caption_text = msg.caption
-            break
-    
     info_text = f"{sender_text}\n📎 <b>Альбом ({len(messages)} файлов)</b>"
-    if caption_text:
-        info_text += f"\n\n📝 <b>Подпись:</b> {caption_text}"
+    if caption:
+        info_text += f"\n\n📝 <b>Подпись:</b> {caption}"
     
     # Формируем медиагруппу
     media_group = []
-    for msg in messages:
+    first_has_caption = False
+    
+    for i, msg in enumerate(messages):
+        # Подпись добавляем только к первому элементу
+        msg_caption = caption if (i == 0 and caption) else None
+        
         if msg.photo:
-            media_group.append(types.InputMediaPhoto(msg.photo[-1].file_id))
+            media_group.append(types.InputMediaPhoto(msg.photo[-1].file_id, caption=msg_caption, parse_mode='HTML'))
         elif msg.video:
-            media_group.append(types.InputMediaVideo(msg.video.file_id))
+            media_group.append(types.InputMediaVideo(msg.video.file_id, caption=msg_caption, parse_mode='HTML'))
         elif msg.audio:
-            media_group.append(types.InputMediaAudio(msg.audio.file_id))
+            media_group.append(types.InputMediaAudio(msg.audio.file_id, caption=msg_caption, parse_mode='HTML'))
         elif msg.document:
-            media_group.append(types.InputMediaDocument(msg.document.file_id))
+            media_group.append(types.InputMediaDocument(msg.document.file_id, caption=msg_caption, parse_mode='HTML'))
     
     if media_group:
         try:
+            # Отправляем альбом
             sent_messages = bot.send_media_group(CHAT_ID, media_group)
+            
+            # Запоминаем все сообщения из альбома для ответа
             for msg in sent_messages:
                 message_to_user[msg.message_id] = user_id
             
+            # Отправляем информационное сообщение с кнопкой профиля
             info_msg = bot.send_message(CHAT_ID, info_text, parse_mode='HTML', reply_markup=markup)
             if info_msg:
                 message_to_user[info_msg.message_id] = user_id
                 
         except Exception as e:
             print(f"Ошибка отправки альбома: {e}")
+            # Если не удалось отправить альбомом, отправляем по одному
             for msg in messages:
                 temp_data = {
                     'type': 'single_media',
@@ -503,6 +517,7 @@ def send_album_to_admins(data, mode):
                     'user_id': user_id
                 }
                 send_single_media_to_admins(temp_data, mode)
+            return
     
     try:
         mode_text = "ᴨубᴧично" if mode == 'public' else "ᴀнониʍно"
