@@ -16,7 +16,7 @@ if not BOT_TOKEN:
 
 CHAT_ID = -1003723055728  # ID чата админов
 
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN, threaded=True, num_threads=4)
 
 # ID администраторов
 ADMINS = [6206017016, 1176412025]
@@ -26,25 +26,43 @@ message_to_user = {}  # {message_id: user_id}
 user_pending_content = {}  # {user_id: {'type': 'text'/'media'/'album', 'data': ...}}
 
 # ========== БАЗА ДАННЫХ ==========
-conn = sqlite3.connect('bans.db', check_same_thread=False)
-cursor = conn.cursor()
+# Используем отдельное соединение для каждого потока
+db_connections = {}
 db_lock = threading.Lock()
 
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS bans (
-        user_id INTEGER PRIMARY KEY,
-        user_name TEXT,
-        username TEXT,
-        reason TEXT,
-        banned_by INTEGER,
-        banned_by_name TEXT,
-        banned_at TEXT
-    )
-''')
-conn.commit()
+def get_db_connection():
+    """Получает соединение с БД для текущего потока"""
+    thread_id = threading.get_ident()
+    if thread_id not in db_connections:
+        conn = sqlite3.connect('bans.db', check_same_thread=False)
+        # Настройка для многопоточности
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        db_connections[thread_id] = conn
+    return db_connections[thread_id]
+
+def init_db():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bans (
+            user_id INTEGER PRIMARY KEY,
+            user_name TEXT,
+            username TEXT,
+            reason TEXT,
+            banned_by INTEGER,
+            banned_by_name TEXT,
+            banned_at TEXT
+        )
+    ''')
+    conn.commit()
+
+init_db()
 
 def add_ban(user_id, user_name, username, reason, banned_by, banned_by_name):
     with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO bans 
             (user_id, user_name, username, reason, banned_by, banned_by_name, banned_at) 
@@ -54,19 +72,28 @@ def add_ban(user_id, user_name, username, reason, banned_by, banned_by_name):
 
 def remove_ban(user_id):
     with db_lock:
+        conn = get_db_connection()
+        cursor = conn.cursor()
         cursor.execute('DELETE FROM bans WHERE user_id = ?', (user_id,))
         conn.commit()
         return cursor.rowcount > 0
 
 def is_banned(user_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
     cursor.execute('SELECT 1 FROM bans WHERE user_id = ?', (user_id,))
-    return cursor.fetchone() is not None
+    result = cursor.fetchone() is not None
+    return result
 
 def get_ban_info(user_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
     cursor.execute('SELECT user_name, username, reason, banned_by_name, banned_at FROM bans WHERE user_id = ?', (user_id,))
     return cursor.fetchone()
 
 def get_all_bans():
+    conn = get_db_connection()
+    cursor = conn.cursor()
     cursor.execute('SELECT user_id, user_name, username, reason, banned_by_name, banned_at FROM bans ORDER BY banned_at DESC')
     return cursor.fetchall()
 
@@ -201,8 +228,9 @@ def handle_text_message(message):
     ask_send_mode(user_id, content_data)
 
 # ========== ОБРАБОТКА МЕДИА (включая альбомы) ==========
-# Словарь для сбора альбомов
-album_collector = {}  # {user_id: {'messages': [], 'timer': None, 'caption': None}}
+# Словарь для сбора альбомов с блокировкой
+album_collector = {}
+album_lock = threading.Lock()
 
 @bot.message_handler(content_types=['photo', 'video', 'audio', 'document', 'voice', 'sticker'], func=lambda message: message.chat.type == 'private')
 def handle_media(message):
@@ -217,24 +245,35 @@ def handle_media(message):
     # Определяем, часть ли это альбома
     if message.media_group_id:
         # Это альбом — собираем части
-        if user_id not in album_collector:
-            album_collector[user_id] = {'messages': [], 'timer': None, 'caption': None}
-        
-        collector = album_collector[user_id]
-        collector['messages'].append(message)
-        
-        # Сохраняем подпись, если есть
-        if message.caption and not collector['caption']:
-            collector['caption'] = message.caption
-        
-        # Сбрасываем таймер
-        if collector['timer']:
-            collector['timer'].cancel()
-        
-        # Устанавливаем новый таймер на 1.5 секунды (больше времени для больших альбомов)
-        timer = threading.Timer(1.5, finish_album_collection, args=[user_id])
-        collector['timer'] = timer
-        timer.start()
+        with album_lock:
+            if user_id not in album_collector:
+                album_collector[user_id] = {'messages': [], 'timer': None, 'caption': None, 'media_group_id': message.media_group_id}
+            
+            collector = album_collector[user_id]
+            
+            # Проверяем, что это тот же альбом
+            if collector['media_group_id'] != message.media_group_id:
+                # Это новый альбом, отправляем старый
+                if collector['timer']:
+                    collector['timer'].cancel()
+                finish_album_collection(user_id)
+                # Создаём новый коллектор
+                album_collector[user_id] = {'messages': [message], 'timer': None, 'caption': message.caption, 'media_group_id': message.media_group_id}
+                collector = album_collector[user_id]
+            else:
+                collector['messages'].append(message)
+                # Сохраняем подпись, если есть
+                if message.caption and not collector['caption']:
+                    collector['caption'] = message.caption
+            
+            # Сбрасываем таймер
+            if collector['timer']:
+                collector['timer'].cancel()
+            
+            # Устанавливаем новый таймер на 2 секунды для надёжности
+            timer = threading.Timer(2.0, finish_album_collection, args=[user_id])
+            collector['timer'] = timer
+            timer.start()
     else:
         # Одиночное медиа — сразу спрашиваем режим
         content_data = {
@@ -248,15 +287,18 @@ def handle_media(message):
 
 def finish_album_collection(user_id):
     """Вызывается когда альбом собран"""
-    if user_id not in album_collector:
-        return
-    
-    collector = album_collector[user_id]
-    messages = collector['messages']
-    caption = collector['caption']
-    
-    # Очищаем коллектор
-    del album_collector[user_id]
+    with album_lock:
+        if user_id not in album_collector:
+            return
+        
+        collector = album_collector[user_id]
+        messages = collector['messages'].copy()  # Копируем список
+        caption = collector['caption']
+        
+        # Очищаем коллектор
+        if collector['timer']:
+            collector['timer'].cancel()
+        del album_collector[user_id]
     
     if not messages:
         return
@@ -283,11 +325,12 @@ def handle_mode_choice(call):
         if user_id in user_pending_content:
             del user_pending_content[user_id]
         # Также очищаем альбомный коллектор, если есть
-        if user_id in album_collector:
-            collector = album_collector[user_id]
-            if collector['timer']:
-                collector['timer'].cancel()
-            del album_collector[user_id]
+        with album_lock:
+            if user_id in album_collector:
+                collector = album_collector[user_id]
+                if collector['timer']:
+                    collector['timer'].cancel()
+                del album_collector[user_id]
         bot.edit_message_text(
             "ᴛᴇᴨᴇᴩь ʙы ᴄнᴏʙᴀ ʍᴏжᴇᴛᴇ ᴏᴛᴨᴩᴀʙᴧяᴛь ᴄᴏᴏбщᴇния.\n\n❌ ᴏᴛᴨᴩᴀʙᴋᴀ ᴄᴏᴏбщᴇния ᴏᴛʍᴇнᴇнᴀ.",
             call.message.chat.id,
@@ -316,12 +359,16 @@ def handle_mode_choice(call):
     )
     
     # Отправляем контент в зависимости от типа
-    if content_data['type'] == 'text':
-        send_text_to_admins(content_data, mode)
-    elif content_data['type'] == 'single_media':
-        send_single_media_to_admins(content_data, mode)
-    elif content_data['type'] == 'album':
-        send_album_to_admins(content_data, mode)
+    try:
+        if content_data['type'] == 'text':
+            send_text_to_admins(content_data, mode)
+        elif content_data['type'] == 'single_media':
+            send_single_media_to_admins(content_data, mode)
+        elif content_data['type'] == 'album':
+            send_album_to_admins(content_data, mode)
+    except Exception as e:
+        print(f"Ошибка отправки: {e}")
+        bot.send_message(user_id, "❌ Произошла ошибка при отправке. Попробуйте ещё раз.")
     
     bot.answer_callback_query(call.id)
 
@@ -397,52 +444,56 @@ def send_single_media_to_admins(data, mode):
     
     sent_msg = None
     
-    if message.photo:
-        sent_msg = bot.send_photo(
-            CHAT_ID,
-            message.photo[-1].file_id,
-            caption=full_caption[:1024],
-            parse_mode='HTML',
-            reply_markup=markup
-        )
-    elif message.video:
-        sent_msg = bot.send_video(
-            CHAT_ID,
-            message.video.file_id,
-            caption=full_caption[:1024],
-            parse_mode='HTML',
-            reply_markup=markup
-        )
-    elif message.audio:
-        sent_msg = bot.send_audio(
-            CHAT_ID,
-            message.audio.file_id,
-            caption=full_caption[:1024],
-            parse_mode='HTML',
-            reply_markup=markup
-        )
-    elif message.document:
-        sent_msg = bot.send_document(
-            CHAT_ID,
-            message.document.file_id,
-            caption=full_caption[:1024],
-            parse_mode='HTML',
-            reply_markup=markup
-        )
-    elif message.voice:
-        sent_msg = bot.send_voice(
-            CHAT_ID,
-            message.voice.file_id,
-            caption=full_caption[:1024],
-            parse_mode='HTML',
-            reply_markup=markup
-        )
-    elif message.sticker:
-        sent_msg = bot.send_sticker(CHAT_ID, message.sticker.file_id, reply_markup=markup)
-        bot.send_message(CHAT_ID, full_caption, parse_mode='HTML')
-    
-    if sent_msg:
-        message_to_user[sent_msg.message_id] = user_id
+    try:
+        if message.photo:
+            sent_msg = bot.send_photo(
+                CHAT_ID,
+                message.photo[-1].file_id,
+                caption=full_caption[:1024],
+                parse_mode='HTML',
+                reply_markup=markup
+            )
+        elif message.video:
+            sent_msg = bot.send_video(
+                CHAT_ID,
+                message.video.file_id,
+                caption=full_caption[:1024],
+                parse_mode='HTML',
+                reply_markup=markup
+            )
+        elif message.audio:
+            sent_msg = bot.send_audio(
+                CHAT_ID,
+                message.audio.file_id,
+                caption=full_caption[:1024],
+                parse_mode='HTML',
+                reply_markup=markup
+            )
+        elif message.document:
+            sent_msg = bot.send_document(
+                CHAT_ID,
+                message.document.file_id,
+                caption=full_caption[:1024],
+                parse_mode='HTML',
+                reply_markup=markup
+            )
+        elif message.voice:
+            sent_msg = bot.send_voice(
+                CHAT_ID,
+                message.voice.file_id,
+                caption=full_caption[:1024],
+                parse_mode='HTML',
+                reply_markup=markup
+            )
+        elif message.sticker:
+            sent_msg = bot.send_sticker(CHAT_ID, message.sticker.file_id, reply_markup=markup)
+            bot.send_message(CHAT_ID, full_caption, parse_mode='HTML')
+        
+        if sent_msg:
+            message_to_user[sent_msg.message_id] = user_id
+    except Exception as e:
+        print(f"Ошибка отправки медиа: {e}")
+        raise
     
     try:
         mode_text = "ᴨубᴧично" if mode == 'public' else "ᴀнониʍно"
@@ -458,7 +509,9 @@ def send_album_to_admins(data, mode):
     user_name = data['user_name']
     username = data['username']
     messages = data['messages']
-    caption = data.get('caption', '')  # Получаем сохранённую подпись
+    caption = data.get('caption', '')
+    
+    print(f"Отправка альбома: {len(messages)} файлов, подпись: {caption}")
     
     markup = None
     if mode == 'public' and username:
@@ -476,25 +529,29 @@ def send_album_to_admins(data, mode):
     
     # Формируем медиагруппу
     media_group = []
-    first_has_caption = False
     
     for i, msg in enumerate(messages):
-        # Подпись добавляем только к первому элементу
-        msg_caption = caption if (i == 0 and caption) else None
-        
-        if msg.photo:
-            media_group.append(types.InputMediaPhoto(msg.photo[-1].file_id, caption=msg_caption, parse_mode='HTML'))
-        elif msg.video:
-            media_group.append(types.InputMediaVideo(msg.video.file_id, caption=msg_caption, parse_mode='HTML'))
-        elif msg.audio:
-            media_group.append(types.InputMediaAudio(msg.audio.file_id, caption=msg_caption, parse_mode='HTML'))
-        elif msg.document:
-            media_group.append(types.InputMediaDocument(msg.document.file_id, caption=msg_caption, parse_mode='HTML'))
+        try:
+            # Подпись добавляем только к первому элементу
+            msg_caption = caption if (i == 0 and caption) else None
+            
+            if msg.photo:
+                media_group.append(types.InputMediaPhoto(msg.photo[-1].file_id, caption=msg_caption, parse_mode='HTML'))
+            elif msg.video:
+                media_group.append(types.InputMediaVideo(msg.video.file_id, caption=msg_caption, parse_mode='HTML'))
+            elif msg.audio:
+                media_group.append(types.InputMediaAudio(msg.audio.file_id, caption=msg_caption, parse_mode='HTML'))
+            elif msg.document:
+                media_group.append(types.InputMediaDocument(msg.document.file_id, caption=msg_caption, parse_mode='HTML'))
+        except Exception as e:
+            print(f"Ошибка обработки элемента альбома {i}: {e}")
     
     if media_group:
         try:
+            print(f"Отправка media_group из {len(media_group)} элементов")
             # Отправляем альбом
             sent_messages = bot.send_media_group(CHAT_ID, media_group)
+            print(f"Отправлено {len(sent_messages)} сообщений")
             
             # Запоминаем все сообщения из альбома для ответа
             for msg in sent_messages:
@@ -508,22 +565,27 @@ def send_album_to_admins(data, mode):
         except Exception as e:
             print(f"Ошибка отправки альбома: {e}")
             # Если не удалось отправить альбомом, отправляем по одному
+            bot.send_message(user_id, "⚠️ Не удалось отправить альбомом, отправляю по одному...")
             for msg in messages:
-                temp_data = {
-                    'type': 'single_media',
-                    'message': msg,
-                    'user_name': user_name,
-                    'username': username,
-                    'user_id': user_id
-                }
-                send_single_media_to_admins(temp_data, mode)
+                try:
+                    temp_data = {
+                        'type': 'single_media',
+                        'message': msg,
+                        'user_name': user_name,
+                        'username': username,
+                        'user_id': user_id
+                    }
+                    send_single_media_to_admins(temp_data, mode)
+                    time.sleep(0.5)  # Небольшая задержка между сообщениями
+                except Exception as e2:
+                    print(f"Ошибка отправки отдельного медиа: {e2}")
             return
     
     try:
         mode_text = "ᴨубᴧично" if mode == 'public' else "ᴀнониʍно"
         bot.send_message(
             user_id, 
-            f"⤿ Альбом из {len(media_group)} файлов отправлен {mode_text}!\n\nКогда администратор ответит, вы получите уведомление."
+            f"⤿ Альбом из {len(messages)} файлов отправлен {mode_text}!\n\nКогда администратор ответит, вы получите уведомление."
         )
     except Exception as e:
         print(f"Ошибка отправки подтверждения: {e}")
