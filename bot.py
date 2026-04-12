@@ -45,8 +45,7 @@ def get_db_connection():
     """Получает соединение с БД для текущего потока"""
     thread_id = threading.get_ident()
     if thread_id not in db_connections:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)  # ← ИСПОЛЬЗУЕМ DB_PATH
-        # Настройка для многопоточности
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         db_connections[thread_id] = conn
@@ -253,7 +252,7 @@ def handle_text_message(message):
 album_collector = {}
 album_lock = threading.Lock()
 
-@bot.message_handler(content_types=['photo', 'video', 'audio', 'document', 'voice', 'sticker'], func=lambda message: message.chat.type == 'private')
+@bot.message_handler(content_types=['photo', 'video', 'audio', 'document', 'voice', 'sticker', 'video_note'], func=lambda message: message.chat.type == 'private')
 def handle_media(message):
     user_id = message.from_user.id
     
@@ -313,7 +312,7 @@ def finish_album_collection(user_id):
             return
         
         collector = album_collector[user_id]
-        messages = collector['messages'].copy()  # Копируем список
+        messages = collector['messages'].copy()
         caption = collector['caption']
         
         # Очищаем коллектор
@@ -328,7 +327,7 @@ def finish_album_collection(user_id):
     content_data = {
         'type': 'album',
         'messages': messages,
-        'caption': caption,  # Сохраняем подпись
+        'caption': caption,
         'user_name': messages[0].from_user.first_name,
         'username': messages[0].from_user.username,
         'user_id': user_id
@@ -345,7 +344,6 @@ def handle_mode_choice(call):
     if mode == 'cancel':
         if user_id in user_pending_content:
             del user_pending_content[user_id]
-        # Также очищаем альбомный коллектор, если есть
         with album_lock:
             if user_id in album_collector:
                 collector = album_collector[user_id]
@@ -379,7 +377,6 @@ def handle_mode_choice(call):
         parse_mode='HTML'
     )
     
-    # Отправляем контент в зависимости от типа
     try:
         if content_data['type'] == 'text':
             send_text_to_admins(content_data, mode)
@@ -450,6 +447,8 @@ def send_single_media_to_admins(data, mode):
         media_type = "Фото"
     elif message.video:
         media_type = "Видео"
+    elif message.video_note:
+        media_type = "Видеокружок"
     elif message.audio:
         media_type = "Аудио"
     elif message.document:
@@ -482,6 +481,15 @@ def send_single_media_to_admins(data, mode):
                 parse_mode='HTML',
                 reply_markup=markup
             )
+        elif message.video_note:
+            sent_msg = bot.send_video_note(
+                CHAT_ID,
+                message.video_note.file_id,
+                reply_markup=markup
+            )
+            if sent_msg:
+                message_to_user[sent_msg.message_id] = user_id
+            bot.send_message(CHAT_ID, full_caption, parse_mode='HTML')
         elif message.audio:
             sent_msg = bot.send_audio(
                 CHAT_ID,
@@ -510,7 +518,7 @@ def send_single_media_to_admins(data, mode):
             sent_msg = bot.send_sticker(CHAT_ID, message.sticker.file_id, reply_markup=markup)
             bot.send_message(CHAT_ID, full_caption, parse_mode='HTML')
         
-        if sent_msg:
+        if sent_msg and message.content_type != 'video_note':
             message_to_user[sent_msg.message_id] = user_id
     except Exception as e:
         print(f"Ошибка отправки медиа: {e}")
@@ -548,12 +556,10 @@ def send_album_to_admins(data, mode):
     if caption:
         info_text += f"\n\n📝 <b>Подпись:</b> {caption}"
     
-    # Формируем медиагруппу
     media_group = []
     
     for i, msg in enumerate(messages):
         try:
-            # Подпись добавляем только к первому элементу
             msg_caption = caption if (i == 0 and caption) else None
             
             if msg.photo:
@@ -570,22 +576,18 @@ def send_album_to_admins(data, mode):
     if media_group:
         try:
             print(f"Отправка media_group из {len(media_group)} элементов")
-            # Отправляем альбом
             sent_messages = bot.send_media_group(CHAT_ID, media_group)
             print(f"Отправлено {len(sent_messages)} сообщений")
             
-            # Запоминаем все сообщения из альбома для ответа
             for msg in sent_messages:
                 message_to_user[msg.message_id] = user_id
             
-            # Отправляем информационное сообщение с кнопкой профиля
             info_msg = bot.send_message(CHAT_ID, info_text, parse_mode='HTML', reply_markup=markup)
             if info_msg:
                 message_to_user[info_msg.message_id] = user_id
                 
         except Exception as e:
             print(f"Ошибка отправки альбома: {e}")
-            # Если не удалось отправить альбомом, отправляем по одному
             bot.send_message(user_id, "⚠️ Не удалось отправить альбомом, отправляю по одному...")
             for msg in messages:
                 try:
@@ -597,7 +599,7 @@ def send_album_to_admins(data, mode):
                         'user_id': user_id
                     }
                     send_single_media_to_admins(temp_data, mode)
-                    time.sleep(0.5)  # Небольшая задержка между сообщениями
+                    time.sleep(0.5)
                 except Exception as e2:
                     print(f"Ошибка отправки отдельного медиа: {e2}")
             return
@@ -716,6 +718,76 @@ def unban_user(message):
     except ValueError:
         bot.reply_to(message, "❌ Неверный формат ID")
 
+# ========== КОМАНДА /CLEARBANS ==========
+@bot.message_handler(commands=['clearbans'])
+def clearbans_command(message):
+    if message.chat.id != CHAT_ID:
+        return
+    
+    if message.from_user.id not in ADMINS:
+        bot.reply_to(message, "⛔ У вас нет прав")
+        return
+    
+    bans = get_all_bans()
+    
+    if not bans:
+        bot.reply_to(message, "📋 <b>Банлист уже пуст</b>", parse_mode='HTML')
+        return
+    
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("✅ Да, очистить", callback_data="clearbans_confirm"),
+        types.InlineKeyboardButton("❌ Отмена", callback_data="clearbans_cancel")
+    )
+    
+    bot.reply_to(
+        message,
+        f"⚠️ <b>ВНИМАНИЕ!</b>\n\n"
+        f"Вы собираетесь удалить <b>ВСЕХ</b> забаненных пользователей.\n"
+        f"Всего банов: <b>{len(bans)}</b>\n\n"
+        f"Это действие <b>НЕВОЗМОЖНО ОТМЕНИТЬ</b>.\n\n"
+        f"Вы уверены?",
+        parse_mode='HTML',
+        reply_markup=markup
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('clearbans_'))
+def clearbans_callback(call):
+    if call.from_user.id not in ADMINS:
+        bot.answer_callback_query(call.id, "⛔ У вас нет прав", show_alert=True)
+        return
+    
+    action = call.data.replace('clearbans_', '')
+    
+    if action == 'cancel':
+        bot.edit_message_text(
+            "❌ Очистка банлиста отменена.",
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode='HTML'
+        )
+        bot.answer_callback_query(call.id, "Отменено")
+        return
+    
+    if action == 'confirm':
+        bans = get_all_bans()
+        total_bans = len(bans)
+        
+        with db_lock:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM bans')
+            conn.commit()
+        
+        bot.edit_message_text(
+            f"✅ <b>Банлист очищен!</b>\n\n"
+            f"Удалено пользователей: <b>{total_bans}</b>",
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode='HTML'
+        )
+        bot.answer_callback_query(call.id, f"✅ Удалено {total_bans} банов", show_alert=True)
+
 # ========== ПАГИНАЦИЯ ДЛЯ БАНЛИСТА ==========
 
 def show_banlist_page(chat_id, page, reply_to=None):
@@ -723,7 +795,6 @@ def show_banlist_page(chat_id, page, reply_to=None):
     bans = get_all_bans()
     total_pages = (len(bans) + BANS_PER_PAGE - 1) // BANS_PER_PAGE if bans else 1
     
-    # Проверяем, что страница существует
     if page < 0:
         page = 0
     elif page >= total_pages:
@@ -749,60 +820,45 @@ def show_banlist_page(chat_id, page, reply_to=None):
         text += f"   📝 {reason[:40]}\n"
         text += f"   ⏰ {banned_at}\n\n"
     
-    # Создаём кнопки для каждого пользователя на странице
     markup = types.InlineKeyboardMarkup(row_width=1)
     
-    # Кнопки профилей
     for ban in bans[start:end]:
         user_id, user_name, username, reason, banned_by, banned_at = ban
         if username:
-            # Если есть username — кнопка-ссылка на профиль
             markup.add(types.InlineKeyboardButton(
                 f"👤 {user_name}",
                 url=f"https://t.me/{username}"
             ))
         else:
-            # Если нет username — кнопка с информацией о бане
             markup.add(types.InlineKeyboardButton(
                 f"👤 {user_name} (инфо)",
                 callback_data=f"baninfo_{user_id}"
             ))
     
-    # Разделитель
     markup.add(types.InlineKeyboardButton("━━━ НАВИГАЦИЯ ━━━", callback_data="banpage_info"))
     
-    # Кнопки навигации
     nav_buttons = []
     
-    # Кнопка "В начало"
     if page > 0:
         nav_buttons.append(types.InlineKeyboardButton("⏮", callback_data=f"banpage_0"))
-    
-    # Кнопка "Назад"
     if page > 0:
         nav_buttons.append(types.InlineKeyboardButton("◀️", callback_data=f"banpage_{page-1}"))
     
-    # Индикатор страницы
     nav_buttons.append(types.InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="banpage_info"))
     
-    # Кнопка "Вперёд"
     if page < total_pages - 1:
         nav_buttons.append(types.InlineKeyboardButton("▶️", callback_data=f"banpage_{page+1}"))
-    
-    # Кнопка "В конец"
     if page < total_pages - 1:
         nav_buttons.append(types.InlineKeyboardButton("⏭", callback_data=f"banpage_{total_pages-1}"))
     
     markup.add(*nav_buttons)
     
-    # Второй ряд
     row2 = []
     if total_pages > 5:
         row2.append(types.InlineKeyboardButton("🔍 К странице", callback_data="banpage_goto"))
     row2.append(types.InlineKeyboardButton("📋 Компактный список", callback_data="banlist_all"))
     markup.add(*row2)
     
-    # Третий ряд
     markup.add(types.InlineKeyboardButton("🔎 Поиск по ID", callback_data="banpage_byid"))
     
     if reply_to:
@@ -821,7 +877,6 @@ def banlist(message):
         bot.reply_to(message, "📋 <b>Нет забаненных пользователей</b>", parse_mode='HTML')
         return
     
-    # Показываем первую страницу
     show_banlist_page(message.chat.id, 0, message.message_id)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('banpage_'))
@@ -1117,7 +1172,7 @@ def block_unknown_commands(message):
     
     known_commands = [
         '/start', '/info',
-        '/ban', '/unban', '/banlist', '/banpage', '/baninfo',
+        '/ban', '/unban', '/banlist', '/banpage', '/baninfo', '/clearbans',
         '/memory'
     ]
     
@@ -1135,6 +1190,7 @@ def block_unknown_commands(message):
             f"• /banlist — список банов\n"
             f"• /banpage 3 — страница банлиста\n"
             f"• /baninfo ID — инфо о бане\n"
+            f"• /clearbans — очистить банлист\n"
             f"• /memory — память бота\n"
             f"• /info — ID чата",
             parse_mode='HTML'
