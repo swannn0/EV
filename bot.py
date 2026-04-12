@@ -1050,8 +1050,7 @@ def info(message):
     else:
         bot.reply_to(message, f"🆔 ID этого чата: {message.chat.id}")
 
-# ============== КОМАНДА ПАМЯТИ ==============
-
+# ========== КОМАНДА /MEMORY ==========
 @bot.message_handler(commands=['memory'])
 def memory_info(message):
     if message.chat.id != CHAT_ID or message.from_user.id not in ADMINS:
@@ -1060,7 +1059,6 @@ def memory_info(message):
     process = psutil.Process(os.getpid())
     mem_info = process.memory_info()
     
-    # Проверяем наличие базы данных
     db_exists = os.path.exists(DB_PATH)
     db_size = os.path.getsize(DB_PATH) if db_exists else 0
     
@@ -1095,7 +1093,6 @@ def clear_memory_callback(call):
                 collector['timer'].cancel()
         album_collector.clear()
     
-    # Закрываем неиспользуемые соединения с БД
     for thread_id, conn in list(db_connections.items()):
         try:
             conn.close()
@@ -1112,6 +1109,37 @@ def clear_memory_callback(call):
         call.message.message_id,
         parse_mode='HTML'
     )
+
+# ========== БЛОКИРОВКА НЕИЗВЕСТНЫХ КОМАНД В АДМИН-ЧАТЕ ==========
+@bot.message_handler(func=lambda m: m.chat.id == CHAT_ID and m.text and m.text.startswith('/'))
+def block_unknown_commands(message):
+    """Блокирует неизвестные команды в админ-чате"""
+    
+    known_commands = [
+        '/start', '/info',
+        '/ban', '/unban', '/banlist', '/banpage', '/baninfo',
+        '/memory'
+    ]
+    
+    command = message.text.split()[0].lower()
+    if '@' in command:
+        command = command.split('@')[0]
+    
+    if command not in known_commands:
+        bot.reply_to(
+            message,
+            f"❌ <b>Неизвестная команда:</b> <code>{command}</code>\n\n"
+            f"<b>Доступные команды:</b>\n"
+            f"• /ban — забанить\n"
+            f"• /unban — разбанить\n"
+            f"• /banlist — список банов\n"
+            f"• /banpage 3 — страница банлиста\n"
+            f"• /baninfo ID — инфо о бане\n"
+            f"• /memory — память бота\n"
+            f"• /info — ID чата",
+            parse_mode='HTML'
+        )
+        return
 
 # ========== ОТВЕТ АДМИНИСТРАТОРА ==========
 @bot.message_handler(func=lambda m: m.chat.id == CHAT_ID and m.reply_to_message)
