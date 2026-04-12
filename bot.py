@@ -8,6 +8,8 @@ import time
 import threading 
 from flask import Flask
 from threading import Thread
+import gc
+import psutil
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -727,6 +729,48 @@ def info(message):
         bot.reply_to(message, f"🆔 Ваш ID: {message.from_user.id}")
     else:
         bot.reply_to(message, f"🆔 ID этого чата: {message.chat.id}")
+
+
+# ============== КОМАНДА ПАМЯТИ
+
+# Добавьте команды:
+@bot.message_handler(commands=['memory'])
+def memory_info(message):
+    if message.chat.id != CHAT_ID or message.from_user.id not in ADMINS:
+        return
+    
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    
+    text = f"📊 <b>Память бота</b>\n"
+    text += f"RSS: {mem_info.rss / 1024 / 1024:.1f} MB\n"
+    text += f"Кэш сообщений: {len(message_to_user)}\n"
+    text += f"Ожидание режима: {len(user_pending_content)}\n"
+    text += f"Сбор альбомов: {len(album_collector)}"
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🧹 Очистить", callback_data="clear_memory"))
+    
+    bot.reply_to(message, text, parse_mode='HTML', reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "clear_memory")
+def clear_memory_callback(call):
+    if call.from_user.id not in ADMINS:
+        bot.answer_callback_query(call.id, "⛔ Нет прав")
+        return
+    
+    message_to_user.clear()
+    user_pending_content.clear()
+    
+    with album_lock:
+        for collector in album_collector.values():
+            if collector.get('timer'):
+                collector['timer'].cancel()
+        album_collector.clear()
+    
+    gc.collect()
+    
+    bot.answer_callback_query(call.id, "✅ Память очищена")
 
 # ========== ОТВЕТ АДМИНИСТРАТОРА ==========
 @bot.message_handler(func=lambda m: m.chat.id == CHAT_ID and m.reply_to_message)
