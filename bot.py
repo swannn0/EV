@@ -25,11 +25,12 @@ ADMINS = [6206017016, 1176412025]
 message_to_user = {}  # {message_id: user_id}
 user_choice = {}      # {user_id: mode}
 user_last_text = {}   # {user_id: {'text': str, 'mode': str, 'user_name': str, 'username': str}}
-user_media_temp = {}  # {user_id: [list of messages]}
 user_media_timer = {} # {user_id: timer}
 user_text_timer = {}  # {user_id: timer}
 user_last_media = {}  # {user_id: [list of messages]} для ожидания текста
 user_media_waiting_text = {}  # {user_id: True/False}
+user_media_album_temp = {}  # {user_id: [list of messages]} для альбомов
+user_media_waiting_temp = {}  # {user_id: [list of messages]} для ожидания текста
 
 # ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('bans.db', check_same_thread=False)
@@ -191,31 +192,28 @@ def ask_send_mode(user_id):
 def handle_text_message(message):
     user_id = message.from_user.id
     
-    # Проверка на бан
     if is_banned(user_id):
         ban_info = get_ban_info(user_id)
         reason = ban_info[2] if ban_info else "не указана"
         bot.reply_to(message, f"🚫 Вы забанены...", parse_mode='HTML')
         return
     
-    # ========== НОВОЕ: Если есть медиа в ожидании текста ==========
-    if user_id in user_media_temp and user_media_temp[user_id]:
-        messages = user_media_temp[user_id]
-        del user_media_temp[user_id]
+    # Если есть медиа в ожидании текста (медиа пришли первыми)
+    if user_id in user_media_waiting_temp and user_media_waiting_temp[user_id]:
+        messages = user_media_waiting_temp[user_id]
+        del user_media_waiting_temp[user_id]
         if user_id in user_media_timer:
             user_media_timer[user_id].cancel()
             del user_media_timer[user_id]
         
-        # Получаем или запрашиваем режим
         if user_id not in user_choice:
-            # Сохраняем текст и медиа, спрашиваем режим
             user_last_text[user_id] = {
                 'text': message.text,
                 'mode': None,
                 'user_name': message.from_user.first_name,
                 'username': message.from_user.username
             }
-            user_media_temp[user_id] = messages
+            user_media_waiting_temp[user_id] = messages
             ask_send_mode(user_id)
             return
         else:
@@ -233,14 +231,12 @@ def handle_text_message(message):
             else:
                 process_multiple_as_album(messages, user_id)
             return
-    # ===========================================================
     
-    # Обычный сценарий: сначала текст, потом медиа
+    # Обычный сценарий
     if user_id not in user_choice:
         ask_send_mode(user_id)
         return
     
-    # Сохраняем текст для возможного альбома
     user_last_text[user_id] = {
         'text': message.text,
         'mode': user_choice[user_id],
@@ -248,10 +244,8 @@ def handle_text_message(message):
         'username': message.from_user.username
     }
     
-    # Убираем выбор режима
     del user_choice[user_id]
     
-    # Устанавливаем таймер (5 секунд)
     timer = threading.Timer(5.0, send_text_if_no_media, args=[user_id])
     user_text_timer[user_id] = timer
     timer.start()
@@ -304,7 +298,6 @@ def send_text_if_no_media(user_id):
     except Exception as e:
         print(f"Ошибка отправки подтверждения: {e}")
 
-# ========== ОБРАБОТКА МЕДИА ==========
 @bot.message_handler(content_types=['photo', 'video', 'audio', 'document', 'voice', 'sticker'], func=lambda message: message.chat.type == 'private')
 def handle_media(message):
     user_id = message.from_user.id
@@ -320,29 +313,28 @@ def handle_media(message):
         bot.reply_to(message, f"🚫 Вы забанены...", parse_mode='HTML')
         return
     
-    # Если есть текст в ожидании — обрабатываем сразу
+    # Если есть текст в ожидании — обрабатываем сразу (текст уже был)
     if user_id in user_last_text:
-        # Добавляем медиа в хранилище к существующему тексту
-        if user_id not in user_media_temp:
-            user_media_temp[user_id] = []
-        user_media_temp[user_id].append(message)
+        # Добавляем медиа в хранилище альбома
+        if user_id not in user_media_album_temp:
+            user_media_album_temp[user_id] = []
+        user_media_album_temp[user_id].append(message)
         
-        # Сбрасываем старый таймер медиа
+        # Сбрасываем старый таймер
         if user_id in user_media_timer:
             user_media_timer[user_id].cancel()
         
-        # Устанавливаем таймер на 1.5 секунды
         timer = threading.Timer(1.5, process_collected_media, args=[user_id])
         user_media_timer[user_id] = timer
         timer.start()
         return
     
-    # Если нет выбора режима и нет текста — сохраняем медиа и ждём текст
-    if user_id not in user_choice and user_id not in user_last_text:
+    # Если нет выбора режима — сохраняем медиа и ждём текст
+    if user_id not in user_choice:
         # Сохраняем медиа в ожидании текста
-        if user_id not in user_media_temp:
-            user_media_temp[user_id] = []
-        user_media_temp[user_id].append(message)
+        if user_id not in user_media_waiting_temp:
+            user_media_waiting_temp[user_id] = []
+        user_media_waiting_temp[user_id].append(message)
         
         # Устанавливаем таймер на 5 секунд для ожидания текста
         if user_id in user_media_timer:
@@ -353,58 +345,36 @@ def handle_media(message):
         timer.start()
         return
     
-    # Обычный сценарий: есть выбор режима, но нет текста
-    if user_id not in user_last_text:
-        # Сохраняем медиа в ожидании текста
-        if user_id not in user_media_temp:
-            user_media_temp[user_id] = []
-        user_media_temp[user_id].append(message)
-        
-        # Устанавливаем таймер на 5 секунд для ожидания текста
-        if user_id in user_media_timer:
-            user_media_timer[user_id].cancel()
-        
-        timer = threading.Timer(5.0, process_media_without_text, args=[user_id])
-        user_media_timer[user_id] = timer
-        timer.start()
-        return
+    # Есть выбор режима, но нет текста — сохраняем в альбом и ждём
+    if user_id not in user_media_album_temp:
+        user_media_album_temp[user_id] = []
+    user_media_album_temp[user_id].append(message)
     
-    # Сюда попадаем, если есть и текст, и режим
-    # Сбрасываем старый таймер медиа
     if user_id in user_media_timer:
         user_media_timer[user_id].cancel()
     
-    # Добавляем медиа в хранилище
-    if user_id not in user_media_temp:
-        user_media_temp[user_id] = []
-    user_media_temp[user_id].append(message)
-    
-    # Устанавливаем новый таймер на 1.5 секунды
     timer = threading.Timer(1.5, process_collected_media, args=[user_id])
     user_media_timer[user_id] = timer
     timer.start()
 
 def process_media_without_text(user_id):
     """Обрабатывает медиа, если текст так и не пришёл (через 5 секунд)"""
-    if user_id not in user_media_temp:
+    if user_id not in user_media_waiting_temp:
         return
     
-    messages = user_media_temp[user_id]
-    del user_media_temp[user_id]
+    messages = user_media_waiting_temp[user_id]
+    del user_media_waiting_temp[user_id]
     if user_id in user_media_timer:
         del user_media_timer[user_id]
     
     # Если нет выбора режима — спрашиваем
     if user_id not in user_choice:
-        # Сохраняем медиа временно и спрашиваем режим
-        user_media_temp[user_id] = messages
+        user_media_waiting_temp[user_id] = messages
         ask_send_mode(user_id)
         return
     
     mode = user_choice[user_id]
     del user_choice[user_id]
-    
-    # Временно сохраняем режим для обработки
     user_choice[user_id] = mode
     
     if len(messages) == 1:
@@ -412,16 +382,16 @@ def process_media_without_text(user_id):
     else:
         process_multiple_as_album(messages, user_id)
     
-    # Удаляем режим после обработки
     if user_id in user_choice:
         del user_choice[user_id]
 
 def process_collected_media(user_id):
-    if user_id not in user_media_temp:
+    """Обрабатывает собранные медиа (альбом)"""
+    if user_id not in user_media_album_temp:
         return
     
-    messages = user_media_temp[user_id]
-    del user_media_temp[user_id]
+    messages = user_media_album_temp[user_id]
+    del user_media_album_temp[user_id]
     if user_id in user_media_timer:
         del user_media_timer[user_id]
     
