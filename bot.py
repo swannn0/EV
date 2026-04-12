@@ -744,12 +744,34 @@ def show_banlist_page(chat_id, page, reply_to=None):
         text += f"   🆔 <code>{user_id}</code>\n"
         if username:
             text += f"   📢 @{username}\n"
+        else:
+            text += f"   📢 <i>нет username</i>\n"
         text += f"   📝 {reason[:40]}\n"
         text += f"   ⏰ {banned_at}\n\n"
     
-    # Создаём кнопки навигации
-    markup = types.InlineKeyboardMarkup(row_width=5)
+    # Создаём кнопки для каждого пользователя на странице
+    markup = types.InlineKeyboardMarkup(row_width=1)
     
+    # Кнопки профилей
+    for ban in bans[start:end]:
+        user_id, user_name, username, reason, banned_by, banned_at = ban
+        if username:
+            # Если есть username — кнопка-ссылка на профиль
+            markup.add(types.InlineKeyboardButton(
+                f"👤 {user_name}",
+                url=f"https://t.me/{username}"
+            ))
+        else:
+            # Если нет username — кнопка с информацией о бане
+            markup.add(types.InlineKeyboardButton(
+                f"👤 {user_name} (инфо)",
+                callback_data=f"baninfo_{user_id}"
+            ))
+    
+    # Разделитель
+    markup.add(types.InlineKeyboardButton("━━━ НАВИГАЦИЯ ━━━", callback_data="banpage_info"))
+    
+    # Кнопки навигации
     nav_buttons = []
     
     # Кнопка "В начало"
@@ -777,11 +799,11 @@ def show_banlist_page(chat_id, page, reply_to=None):
     row2 = []
     if total_pages > 5:
         row2.append(types.InlineKeyboardButton("🔍 К странице", callback_data="banpage_goto"))
-    row2.append(types.InlineKeyboardButton("📋 Все баны", callback_data="banlist_all"))
+    row2.append(types.InlineKeyboardButton("📋 Компактный список", callback_data="banlist_all"))
     markup.add(*row2)
     
     # Третий ряд
-    markup.add(types.InlineKeyboardButton("🔎 Инфо по ID", callback_data="banpage_byid"))
+    markup.add(types.InlineKeyboardButton("🔎 Поиск по ID", callback_data="banpage_byid"))
     
     if reply_to:
         bot.send_message(chat_id, text, parse_mode='HTML', reply_markup=markup, reply_to_message_id=reply_to)
