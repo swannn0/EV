@@ -14,7 +14,7 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден! Добавьте переменную окружения BOT_TOKEN")
 
-CHAT_ID = -1003723055728  # ID чата админов (без #, просто число)
+CHAT_ID = -1003723055728  # ID чата админов
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -23,17 +23,13 @@ ADMINS = [6206017016, 1176412025]
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 message_to_user = {}  # {message_id: user_id}
-user_choice = {}      # {user_id: mode}
-user_last_text = {}   # {user_id: {'text': str, 'mode': str, 'user_name': str, 'username': str}}
-user_media_timer = {} # {user_id: timer}
-user_text_timer = {}  # {user_id: timer}
-user_media_album_temp = {}  # {user_id: [list of messages]} для альбомов
-user_media_waiting_temp = {}  # {user_id: [list of messages]} для ожидания текста
+user_mode = {}        # {user_id: mode}
+user_pending_content = {}  # {user_id: {'type': 'text'/'media'/'album', 'data': ...}}
 
 # ========== БАЗА ДАННЫХ ==========
 conn = sqlite3.connect('bans.db', check_same_thread=False)
 cursor = conn.cursor()
-db_lock = threading.Lock()  # Блокировка для безопасной работы с БД
+db_lock = threading.Lock()
 
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS bans (
@@ -77,27 +73,25 @@ def get_all_bans():
 
 # ========== ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ USER_ID ИЗ СООБЩЕНИЯ ==========
 def get_user_id_from_message(msg):
-    """Пытается найти user_id в сообщении (поддерживает анонимные сообщения)"""
     if msg.message_id in message_to_user:
         return message_to_user[msg.message_id]
     
     if msg.text or msg.caption:
         text = msg.text or msg.caption
-        # ИСПРАВЛЕНО: поддержка HTML-тега <code>
         match = re.search(r"🆔 ID: (?:<code>)?(\d+)(?:</code>)?", text)
         if match:
             return int(match.group(1))
     return None
 
 # ========== КОМАНДА /START ==========
-START_PHOTO_URL = "https://i.postimg.cc/BQJ8bXP1/photo-2026-04-09-18-55-14.jpg"  # ваша прямая ссылка
+START_PHOTO_URL = "https://i.postimg.cc/BQJ8bXP1/photo-2026-04-09-18-55-14.jpg"
 
 @bot.message_handler(commands=['start'])
 def start(message):
     hello_text = """
-﹌﹌﹌﹌ . . '''ᅠ ᅠ♱  ᅠ   𝅄  ﹌﹌﹌  . 𓏲
+﹌﹌﹌﹌ . . '''ᅠ ᅠ♱  ᅠ   𝅄  ﹌﹌﹌  . 𓏲
 
-          ╰┈  𝑾𝑬𝑳⊹ ࣪ ˖ 𝑪𝑶𝑴𝑬 
+          ╰┈  𝑾𝑬𝑳⊹ ࣪ ˖ 𝑪𝑶𝑴𝑬 
 
 𝑻𝒐𝒊, 𝒄𝒐𝒎𝒎𝒆 𝒖𝒏 𝒄𝒐𝒖𝒕𝒆𝒂𝒖,
 𝑻𝒖 𝒆𝒔 𝒆𝒏𝒕𝒓é𝒆 𝒅𝒂𝒏𝒔 𝒎𝒐𝒏 𝒄œ𝒖𝒓.
@@ -116,7 +110,6 @@ def start(message):
     markup.add(types.InlineKeyboardButton('ᴀнᴋᴇᴛницᴀ', url='https://t.me/+wKdYUS_mahgwZjdi'))
     markup.add(types.InlineKeyboardButton('инɸᴏ ᴋᴀнᴀᴧ', url='https://t.me/+uZkT_EWW0tcwZjcy'))
 
-    # Отправляем фото по прямой ссылке
     try:
         bot.send_photo(
             message.chat.id, 
@@ -126,7 +119,6 @@ def start(message):
             parse_mode='HTML'
         )
     except Exception as e:
-        # Если фото не загрузилось, отправляем только текст
         bot.send_message(
             message.chat.id, 
             hello_text, 
@@ -167,7 +159,10 @@ def send_anketa(message):
  """
     bot.send_message(message.chat.id, anketa_text, parse_mode='HTML')
 
-def ask_send_mode(user_id):
+def ask_send_mode(user_id, content_data):
+    """Спрашивает режим и сохраняет контент для отправки после выбора"""
+    user_pending_content[user_id] = content_data
+    
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("🌍 ᴨубᴧично", callback_data=f"mode_public_{user_id}"),
@@ -196,89 +191,149 @@ def handle_text_message(message):
         bot.reply_to(message, f"🚫 Вы забанены...", parse_mode='HTML')
         return
     
-    # Если есть медиа в ожидании текста (медиа пришли первыми)
-    if user_id in user_media_waiting_temp and user_media_waiting_temp[user_id]:
-        messages = user_media_waiting_temp[user_id]
-        del user_media_waiting_temp[user_id]
-        if user_id in user_media_timer:
-            user_media_timer[user_id].cancel()
-            del user_media_timer[user_id]
-        
-        if user_id not in user_choice:
-            user_last_text[user_id] = {
-                'text': message.text,
-                'mode': None,
-                'user_name': message.from_user.first_name,
-                'username': message.from_user.username
-            }
-            user_media_waiting_temp[user_id] = messages
-            ask_send_mode(user_id)
-            return
-        else:
-            mode = user_choice[user_id]
-            del user_choice[user_id]
-            user_last_text[user_id] = {
-                'text': message.text,
-                'mode': mode,
-                'user_name': message.from_user.first_name,
-                'username': message.from_user.username
-            }
-            
-            if len(messages) == 1:
-                process_single_media(messages[0], user_id)
-            else:
-                process_multiple_as_album(messages, user_id)
-            return
-    
-    # Обычный сценарий
-    if user_id not in user_choice:
-        ask_send_mode(user_id)
-        return
-    
-    user_last_text[user_id] = {
+    # Сохраняем текст и спрашиваем режим
+    content_data = {
+        'type': 'text',
         'text': message.text,
-        'mode': user_choice[user_id],
         'user_name': message.from_user.first_name,
-        'username': message.from_user.username
+        'username': message.from_user.username,
+        'user_id': user_id
     }
-    
-    del user_choice[user_id]
-    
-    timer = threading.Timer(5.0, send_text_if_no_media, args=[user_id])
-    user_text_timer[user_id] = timer
-    timer.start()
+    ask_send_mode(user_id, content_data)
 
-def send_text_if_no_media(user_id):
-    # Очищаем таймер
-    if user_id in user_text_timer:
-        del user_text_timer[user_id]
+# ========== ОБРАБОТКА МЕДИА (включая альбомы) ==========
+@bot.message_handler(content_types=['photo', 'video', 'audio', 'document', 'voice', 'sticker'], func=lambda message: message.chat.type == 'private')
+def handle_media(message):
+    user_id = message.from_user.id
     
-    if user_id not in user_last_text:
+    if is_banned(user_id):
+        ban_info = get_ban_info(user_id)
+        reason = ban_info[2] if ban_info else "не указана"
+        bot.reply_to(message, f"🚫 Вы забанены...", parse_mode='HTML')
         return
     
-    data = user_last_text[user_id]
-    del user_last_text[user_id]
+    # Определяем, часть ли это альбома
+    if message.media_group_id:
+        # Это альбом — ждём сбора всех частей
+        if user_id not in user_pending_content:
+            user_pending_content[user_id] = {'type': 'album_collecting', 'messages': [], 'timer': None}
+        
+        pending = user_pending_content[user_id]
+        if pending['type'] != 'album_collecting':
+            # Если уже есть что-то другое — начинаем новый сбор
+            user_pending_content[user_id] = {'type': 'album_collecting', 'messages': [], 'timer': None}
+            pending = user_pending_content[user_id]
+        
+        pending['messages'].append(message)
+        
+        # Сбрасываем таймер
+        if pending['timer']:
+            pending['timer'].cancel()
+        
+        # Устанавливаем новый таймер
+        timer = threading.Timer(1.0, finish_album_collection, args=[user_id])
+        pending['timer'] = timer
+        timer.start()
+    else:
+        # Одиночное медиа — сразу спрашиваем режим
+        content_data = {
+            'type': 'single_media',
+            'message': message,
+            'user_name': message.from_user.first_name,
+            'username': message.from_user.username,
+            'user_id': user_id
+        }
+        ask_send_mode(user_id, content_data)
+
+def finish_album_collection(user_id):
+    """Вызывается когда альбом собран"""
+    if user_id not in user_pending_content:
+        return
     
-    mode = data['mode']
+    pending = user_pending_content[user_id]
+    if pending['type'] != 'album_collecting':
+        return
+    
+    messages = pending['messages']
+    if not messages:
+        return
+    
+    # Сохраняем альбом и спрашиваем режим
+    content_data = {
+        'type': 'album',
+        'messages': messages,
+        'user_name': messages[0].from_user.first_name,
+        'username': messages[0].from_user.username,
+        'user_id': user_id
+    }
+    ask_send_mode(user_id, content_data)
+
+# ========== ОБРАБОТЧИК ВЫБОРА РЕЖИМА ==========
+@bot.callback_query_handler(func=lambda call: call.data.startswith('mode_'))
+def handle_mode_choice(call):
+    parts = call.data.split('_')
+    mode = parts[1]
+    user_id = int(parts[2])
+    
+    if mode == 'cancel':
+        if user_id in user_pending_content:
+            del user_pending_content[user_id]
+        bot.edit_message_text(
+            "ᴛᴇᴨᴇᴩь ʙы ᴄнᴏʙᴀ ʍᴏжᴇᴛᴇ ᴏᴛᴨᴩᴀʙᴧяᴛь ᴄᴏᴏбщᴇния.\n\n❌ ᴏᴛᴨᴩᴀʙᴋᴀ ᴄᴏᴏбщᴇния ᴏᴛʍᴇнᴇнᴀ.",
+            call.message.chat.id,
+            call.message.message_id
+        )
+        bot.answer_callback_query(call.id)
+        return
+    
+    if user_id not in user_pending_content:
+        bot.edit_message_text(
+            "❌ Срок действия запроса истёк. Отправьте сообщение заново.",
+            call.message.chat.id,
+            call.message.message_id
+        )
+        bot.answer_callback_query(call.id)
+        return
+    
+    content_data = user_pending_content[user_id]
+    del user_pending_content[user_id]
+    
+    bot.edit_message_text(
+        f"╋ ━ ᴩᴇжиʍ <b>{'ᴨубᴧичной' if mode == 'public' else 'ᴀнониʍной'}</b> оᴛᴨᴩᴀʙᴋи ʙыбᴩᴀн.\n\n⏳ ᴏᴛᴨᴩᴀʙᴧяю ʙᴀɯᴇ ᴄообщᴇниᴇ...",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode='HTML'
+    )
+    
+    # Отправляем контент в зависимости от типа
+    if content_data['type'] == 'text':
+        send_text_to_admins(content_data, mode)
+    elif content_data['type'] == 'single_media':
+        send_single_media_to_admins(content_data, mode)
+    elif content_data['type'] == 'album':
+        send_album_to_admins(content_data, mode)
+    
+    bot.answer_callback_query(call.id)
+
+def send_text_to_admins(data, mode):
+    user_id = data['user_id']
     user_name = data['user_name']
     username = data['username']
+    text = data['text']
     
-    # Создаём кнопку профиля
     markup = None
     if mode == 'public' and username:
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("👤 Профиль", url=f"https://t.me/{username}"))
     
-    # Формируем текст отправителя
     if mode == 'public':
-        sender_text = f"📩 <b>Отправитель:</b> {user_name}\n🆔 ID: {user_id}"
+        sender_text = f"📩 <b>Отправитель:</b> {user_name}\n🆔 ID: <code>{user_id}</code>"
     else:
         sender_text = "👤 <b>Отправитель:</b> Аноним\n🆔 ID: скрыт"
     
-    # Отправляем текст в чат админов
     sent_msg = bot.send_message(
         CHAT_ID,
-        f"{sender_text}\n📝 <b>Сообщение:</b>\n{data['text']}",
+        f"{sender_text}\n📝 <b>Сообщение:</b>\n{text}",
         parse_mode='HTML',
         reply_markup=markup
     )
@@ -286,7 +341,6 @@ def send_text_if_no_media(user_id):
     if sent_msg:
         message_to_user[sent_msg.message_id] = user_id
     
-    # Подтверждение пользователю
     try:
         mode_text = "ᴨубᴧично" if mode == 'public' else "ᴀнониʍно"
         bot.send_message(
@@ -296,227 +350,23 @@ def send_text_if_no_media(user_id):
     except Exception as e:
         print(f"Ошибка отправки подтверждения: {e}")
 
-@bot.message_handler(content_types=['photo', 'video', 'audio', 'document', 'voice', 'sticker'], func=lambda message: message.chat.type == 'private')
-def handle_media(message):
-    user_id = message.from_user.id
+def send_single_media_to_admins(data, mode):
+    user_id = data['user_id']
+    user_name = data['user_name']
+    username = data['username']
+    message = data['message']
+    caption = message.caption if message.caption else ""
     
-    # Отменяем таймер текста (если был)
-    if user_id in user_text_timer:
-        user_text_timer[user_id].cancel()
-        del user_text_timer[user_id]
-    
-    if is_banned(user_id):
-        ban_info = get_ban_info(user_id)
-        reason = ban_info[2] if ban_info else "не указана"
-        bot.reply_to(message, f"🚫 Вы забанены...", parse_mode='HTML')
-        return
-    
-    # Если есть текст в ожидании — обрабатываем сразу (текст уже был)
-    if user_id in user_last_text:
-        # Добавляем медиа в хранилище альбома
-        if user_id not in user_media_album_temp:
-            user_media_album_temp[user_id] = []
-        user_media_album_temp[user_id].append(message)
-        
-        # Сбрасываем старый таймер
-        if user_id in user_media_timer:
-            user_media_timer[user_id].cancel()
-        
-        timer = threading.Timer(1.5, process_collected_media, args=[user_id])
-        user_media_timer[user_id] = timer
-        timer.start()
-        return
-    
-    # Если нет выбора режима — сохраняем медиа и ждём текст
-    if user_id not in user_choice:
-        # Сохраняем медиа в ожидании текста
-        if user_id not in user_media_waiting_temp:
-            user_media_waiting_temp[user_id] = []
-        user_media_waiting_temp[user_id].append(message)
-        
-        # Устанавливаем таймер на 5 секунд для ожидания текста
-        if user_id in user_media_timer:
-            user_media_timer[user_id].cancel()
-        
-        timer = threading.Timer(5.0, process_media_without_text, args=[user_id])
-        user_media_timer[user_id] = timer
-        timer.start()
-        return
-    
-    # Есть выбор режима, но нет текста — сохраняем в альбом и ждём
-    if user_id not in user_media_album_temp:
-        user_media_album_temp[user_id] = []
-    user_media_album_temp[user_id].append(message)
-    
-    if user_id in user_media_timer:
-        user_media_timer[user_id].cancel()
-    
-    timer = threading.Timer(1.5, process_collected_media, args=[user_id])
-    user_media_timer[user_id] = timer
-    timer.start()
-
-def process_media_without_text(user_id):
-    """Обрабатывает медиа, если текст так и не пришёл (через 5 секунд)"""
-    if user_id not in user_media_waiting_temp:
-        return
-    
-    messages = user_media_waiting_temp[user_id]
-    del user_media_waiting_temp[user_id]
-    if user_id in user_media_timer:
-        del user_media_timer[user_id]
-    
-    # Если нет выбора режима — спрашиваем
-    if user_id not in user_choice:
-        # Сохраняем сообщения в альбомное хранилище
-        user_media_album_temp[user_id] = messages
-        ask_send_mode(user_id)
-        return
-    
-    mode = user_choice[user_id]
-    del user_choice[user_id]
-    user_choice[user_id] = mode
-    
-    if len(messages) == 1:
-        process_single_media(messages[0], user_id)
-    else:
-        process_multiple_as_album(messages, user_id)
-    
-    if user_id in user_choice:
-        del user_choice[user_id]
-
-def process_collected_media(user_id):
-    """Обрабатывает собранные медиа (альбом)"""
-    if user_id not in user_media_album_temp:
-        return
-    
-    messages = user_media_album_temp[user_id]
-    del user_media_album_temp[user_id]
-    if user_id in user_media_timer:
-        del user_media_timer[user_id]
-    
-    if len(messages) == 1:
-        process_single_media(messages[0], user_id)
-    else:
-        process_multiple_as_album(messages, user_id)
-
-def process_multiple_as_album(messages, user_id):
-    """Обрабатывает несколько медиа как альбом"""
-    if user_id in user_choice:
-        mode = user_choice[user_id]
-        del user_choice[user_id]
-    elif user_id in user_last_text:
-        mode = user_last_text[user_id]['mode']
-    else:
-        mode = 'public'
-    
-    user_name = messages[0].from_user.first_name
-    username = messages[0].from_user.username
-    
-    # Получаем сохранённый текст (подпись)
-    caption_text = ""
-    if user_id in user_last_text:
-        caption_text = user_last_text[user_id]['text']
-        if 'user_name' in user_last_text[user_id]:
-            user_name = user_last_text[user_id]['user_name']
-        if 'username' in user_last_text[user_id]:
-            username = user_last_text[user_id]['username']
-        del user_last_text[user_id]
-    
-    # Создаём кнопку профиля
     markup = None
     if mode == 'public' and username:
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("👤 Профиль", url=f"https://t.me/{username}"))
     
     if mode == 'public':
-        sender_text = f"📩 <b>Отправитель:</b> {user_name}\n🆔 ID: {user_id}"
+        sender_text = f"📩 <b>Отправитель:</b> {user_name}\n🆔 ID: <code>{user_id}</code>"
     else:
         sender_text = "👤 <b>Отправитель:</b> Аноним\n🆔 ID: скрыт"
     
-    # Формируем информационный текст
-    info_text = f"{sender_text}\n📎 <b>Альбом ({len(messages)} файлов)</b>"
-    if caption_text:
-        info_text += f"\n\n📝 <b>Текст:</b> {caption_text}"
-    
-    # Собираем медиагруппу
-    media_group = []
-    for msg in messages:
-        if msg.photo:
-            media_group.append(types.InputMediaPhoto(msg.photo[-1].file_id))
-        elif msg.video:
-            media_group.append(types.InputMediaVideo(msg.video.file_id))
-        elif msg.audio:
-            media_group.append(types.InputMediaAudio(msg.audio.file_id))
-        elif msg.document:
-            media_group.append(types.InputMediaDocument(msg.document.file_id))
-    
-    if media_group:
-        try:
-            # Отправляем альбом
-            sent_messages = bot.send_media_group(CHAT_ID, media_group)
-            
-            # Запоминаем все сообщения из альбома
-            for msg in sent_messages:
-                message_to_user[msg.message_id] = user_id
-            
-            # Отправляем информационное сообщение
-            info_msg = bot.send_message(CHAT_ID, info_text, parse_mode='HTML', reply_markup=markup)
-            if info_msg:
-                message_to_user[info_msg.message_id] = user_id
-                
-        except Exception as e:
-            print(f"Ошибка отправки альбома: {e}")
-            # Если не удалось отправить альбомом, отправляем по одному
-            for msg in messages:
-                process_single_media(msg, user_id)
-    
-    # Подтверждение пользователю
-    try:
-        mode_text = "ᴨубᴧично" if mode == 'public' else "ᴀнониʍно"
-        bot.send_message(
-            user_id, 
-            f"⤿ Альбом из {len(media_group)} файлов отправлен {mode_text}!\n\nКогда администратор ответит, вы получите уведомление."
-        )
-    except Exception as e:
-        print(f"Ошибка отправки подтверждения: {e}")
-
-def process_single_media(message, user_id):
-    """Обрабатывает одиночное медиа (не из альбома)"""
-    # Берём режим
-    if user_id in user_choice:
-        mode = user_choice[user_id]
-        del user_choice[user_id]
-    elif user_id in user_last_text:
-        mode = user_last_text[user_id]['mode']
-    else:
-        mode = 'public'
-    
-    user_name = message.from_user.first_name
-    username = message.from_user.username
-    
-    # Получаем сохранённый текст
-    caption_text = ""
-    if user_id in user_last_text:
-        caption_text = user_last_text[user_id]['text']
-        if 'user_name' in user_last_text[user_id]:
-            user_name = user_last_text[user_id]['user_name']
-        if 'username' in user_last_text[user_id]:
-            username = user_last_text[user_id]['username']
-        del user_last_text[user_id]
-    
-    # Создаём кнопку профиля
-    markup = None
-    if mode == 'public' and username:
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("👤 Профиль", url=f"https://t.me/{username}"))
-    
-    # Формируем текст отправителя
-    if mode == 'public':
-        sender_text = f"📩 <b>Отправитель:</b> {user_name}\n🆔 ID: {user_id}"
-    else:
-        sender_text = "👤 <b>Отправитель:</b> Аноним\n🆔 ID: скрыт"
-    
-    # Определяем тип медиа
     media_type = ""
     if message.photo:
         media_type = "Фото"
@@ -532,12 +382,11 @@ def process_single_media(message, user_id):
         media_type = "Стикер"
     
     full_caption = f"{sender_text}\n📎 <b>{media_type}</b>"
-    if caption_text:
-        full_caption += f"\n\n📝 <b>Текст:</b> {caption_text}"
+    if caption:
+        full_caption += f"\n\n📝 <b>Подпись:</b> {caption}"
     
     sent_msg = None
     
-    # Отправляем в зависимости от типа
     if message.photo:
         sent_msg = bot.send_photo(
             CHAT_ID,
@@ -582,11 +431,9 @@ def process_single_media(message, user_id):
         sent_msg = bot.send_sticker(CHAT_ID, message.sticker.file_id, reply_markup=markup)
         bot.send_message(CHAT_ID, full_caption, parse_mode='HTML')
     
-    # Запоминаем связку для ответа
     if sent_msg:
         message_to_user[sent_msg.message_id] = user_id
     
-    # Подтверждение пользователю
     try:
         mode_text = "ᴨубᴧично" if mode == 'public' else "ᴀнониʍно"
         bot.send_message(
@@ -594,33 +441,77 @@ def process_single_media(message, user_id):
             f"⤿ ᴄообщᴇниᴇ оᴛᴨᴩᴀʙᴧᴇно {mode_text}!\n\nᴋоᴦдᴀ ᴀдʍиниᴄᴛᴩᴀᴛоᴩ оᴛʙᴇᴛиᴛ, ʙы ᴨоᴧучиᴛᴇ уʙᴇдоʍᴧᴇниᴇ."
         )
     except Exception as e:
-        print(f"Ошибка отправки подтверждения пользователю {user_id}: {e}")
+        print(f"Ошибка отправки подтверждения: {e}")
 
-# ========== ОБРАБОТЧИК ВЫБОРА РЕЖИМА ==========
-@bot.callback_query_handler(func=lambda call: call.data.startswith('mode_'))
-def handle_mode_choice(call):
-    parts = call.data.split('_')
-    mode = parts[1]
-    user_id = int(parts[2])
+def send_album_to_admins(data, mode):
+    user_id = data['user_id']
+    user_name = data['user_name']
+    username = data['username']
+    messages = data['messages']
     
-    if mode == 'cancel':
-        bot.edit_message_text(
-            "ᴛᴇᴨᴇᴩь ʙы ᴄнᴏʙᴀ ʍᴏжᴇᴛᴇ ᴏᴛᴨᴩᴀʙᴧяᴛь ᴄᴏᴏбщᴇния.\n\n❌ ᴏᴛᴨᴩᴀʙᴋᴀ ᴄᴏᴏбщᴇния ᴏᴛʍᴇнᴇнᴀ.",
-            call.message.chat.id,
-            call.message.message_id
+    markup = None
+    if mode == 'public' and username:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("👤 Профиль", url=f"https://t.me/{username}"))
+    
+    if mode == 'public':
+        sender_text = f"📩 <b>Отправитель:</b> {user_name}\n🆔 ID: <code>{user_id}</code>"
+    else:
+        sender_text = "👤 <b>Отправитель:</b> Аноним\n🆔 ID: скрыт"
+    
+    # Собираем подписи из первого сообщения с caption
+    caption_text = ""
+    for msg in messages:
+        if msg.caption:
+            caption_text = msg.caption
+            break
+    
+    info_text = f"{sender_text}\n📎 <b>Альбом ({len(messages)} файлов)</b>"
+    if caption_text:
+        info_text += f"\n\n📝 <b>Подпись:</b> {caption_text}"
+    
+    # Формируем медиагруппу
+    media_group = []
+    for msg in messages:
+        if msg.photo:
+            media_group.append(types.InputMediaPhoto(msg.photo[-1].file_id))
+        elif msg.video:
+            media_group.append(types.InputMediaVideo(msg.video.file_id))
+        elif msg.audio:
+            media_group.append(types.InputMediaAudio(msg.audio.file_id))
+        elif msg.document:
+            media_group.append(types.InputMediaDocument(msg.document.file_id))
+    
+    if media_group:
+        try:
+            sent_messages = bot.send_media_group(CHAT_ID, media_group)
+            for msg in sent_messages:
+                message_to_user[msg.message_id] = user_id
+            
+            info_msg = bot.send_message(CHAT_ID, info_text, parse_mode='HTML', reply_markup=markup)
+            if info_msg:
+                message_to_user[info_msg.message_id] = user_id
+                
+        except Exception as e:
+            print(f"Ошибка отправки альбома: {e}")
+            for msg in messages:
+                temp_data = {
+                    'type': 'single_media',
+                    'message': msg,
+                    'user_name': user_name,
+                    'username': username,
+                    'user_id': user_id
+                }
+                send_single_media_to_admins(temp_data, mode)
+    
+    try:
+        mode_text = "ᴨубᴧично" if mode == 'public' else "ᴀнониʍно"
+        bot.send_message(
+            user_id, 
+            f"⤿ Альбом из {len(media_group)} файлов отправлен {mode_text}!\n\nКогда администратор ответит, вы получите уведомление."
         )
-        bot.answer_callback_query(call.id)
-        return
-    
-    user_choice[user_id] = mode
-    
-    bot.edit_message_text(
-        f"╋ ━ ᴩᴇжиʍ <b>{'ᴨубᴧичной' if mode == 'public' else 'ᴀнониʍной'}</b> оᴛᴨᴩᴀʙᴋи ʙыбᴩᴀн.\n\n𓂃🖊 ᴛᴇᴨᴇᴩь нᴀᴨиɯиᴛᴇ ʙᴀɯᴇ ᴄообщᴇниᴇ:",
-        call.message.chat.id,
-        call.message.message_id,
-        parse_mode='HTML'
-    )
-    bot.answer_callback_query(call.id)
+    except Exception as e:
+        print(f"Ошибка отправки подтверждения: {e}")
 
 # ========== КОМАНДА /BAN ==========
 @bot.message_handler(commands=['ban'])
@@ -777,7 +668,6 @@ def reply_to_user_by_quoting(message):
             bot.reply_to(message, f"✅ Ответ отправлен пользователю")
         else:
             text = message.reply_to_message.text or message.reply_to_message.caption or ""
-            # ИСПРАВЛЕНО: поддержка HTML-тега <code>
             match = re.search(r"🆔 ID: (?:<code>)?(\d+)(?:</code>)?", text)
             if match:
                 user_id = int(match.group(1))
@@ -845,7 +735,6 @@ def unban_from_button(call):
 
 @bot.callback_query_handler(func=lambda call: call.data == "banlist_all")
 def banlist_all(call):
-    # Проверка прав
     if call.from_user.id not in ADMINS:
         bot.answer_callback_query(call.id, "⛔ Нет прав", show_alert=True)
         return
