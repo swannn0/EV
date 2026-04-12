@@ -27,6 +27,10 @@ ADMINS = [6206017016, 1176412025]
 message_to_user = {}  # {message_id: user_id}
 user_pending_content = {}  # {user_id: {'type': 'text'/'media'/'album', 'data': ...}}
 
+# Для пагинации банлиста
+banlist_current_page = {}  # {chat_id: page_number}
+BANS_PER_PAGE = 5  # Количество профилей на странице
+
 # ========== БАЗА ДАННЫХ НА ДИСКЕ RENDER ==========
 # Путь к постоянному диску Render
 DATA_DIR = '/opt/render/project/src/data'
@@ -224,7 +228,7 @@ def handle_text_message(message):
         bot.reply_to(message, f"🚫 ʙы зᴀбᴀнᴇны\n\nʙы нᴇ ʍожᴇᴛᴇ оᴛᴨᴩᴀʙᴧяᴛь ᴄообщᴇния ᴀдʍиниᴄᴛᴩᴀᴛоᴩᴀʍ.\n\nᴨᴩичинᴀ: {reason}", parse_mode='HTML')
         return
 
-        # ========== ПОЛНЫЙ ЗАПРЕТ КОМАНД ==========
+    # ========== ПОЛНЫЙ ЗАПРЕТ КОМАНД ==========
     if message.text.startswith('/'):
         bot.reply_to(
             message,
@@ -233,6 +237,7 @@ def handle_text_message(message):
             parse_mode='HTML'
         )
         return
+        
     # Сохраняем текст и спрашиваем режим
     content_data = {
         'type': 'text',
@@ -711,7 +716,78 @@ def unban_user(message):
     except ValueError:
         bot.reply_to(message, "❌ Неверный формат ID")
 
-# ========== КОМАНДА /BANLIST ==========
+# ========== ПАГИНАЦИЯ ДЛЯ БАНЛИСТА ==========
+
+def show_banlist_page(chat_id, page, reply_to=None):
+    """Показывает страницу банлиста"""
+    bans = get_all_bans()
+    total_pages = (len(bans) + BANS_PER_PAGE - 1) // BANS_PER_PAGE if bans else 1
+    
+    # Проверяем, что страница существует
+    if page < 0:
+        page = 0
+    elif page >= total_pages:
+        page = total_pages - 1
+    
+    banlist_current_page[chat_id] = page
+    
+    start = page * BANS_PER_PAGE
+    end = min(start + BANS_PER_PAGE, len(bans))
+    
+    text = f"📋 <b>ЗАБАНЕННЫЕ ПОЛЬЗОВАТЕЛИ</b>\n"
+    text += f"Всего: {len(bans)} | Страница {page + 1}/{total_pages}\n"
+    text += "━━━━━━━━━━━━━━━━━━━━\n\n"
+    
+    for i, ban in enumerate(bans[start:end], start=start + 1):
+        user_id, user_name, username, reason, banned_by, banned_at = ban
+        text += f"<b>{i}. {user_name}</b>\n"
+        text += f"   🆔 <code>{user_id}</code>\n"
+        if username:
+            text += f"   📢 @{username}\n"
+        text += f"   📝 {reason[:40]}\n"
+        text += f"   ⏰ {banned_at}\n\n"
+    
+    # Создаём кнопки навигации
+    markup = types.InlineKeyboardMarkup(row_width=5)
+    
+    nav_buttons = []
+    
+    # Кнопка "В начало"
+    if page > 0:
+        nav_buttons.append(types.InlineKeyboardButton("⏮", callback_data=f"banpage_0"))
+    
+    # Кнопка "Назад"
+    if page > 0:
+        nav_buttons.append(types.InlineKeyboardButton("◀️", callback_data=f"banpage_{page-1}"))
+    
+    # Индикатор страницы
+    nav_buttons.append(types.InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="banpage_info"))
+    
+    # Кнопка "Вперёд"
+    if page < total_pages - 1:
+        nav_buttons.append(types.InlineKeyboardButton("▶️", callback_data=f"banpage_{page+1}"))
+    
+    # Кнопка "В конец"
+    if page < total_pages - 1:
+        nav_buttons.append(types.InlineKeyboardButton("⏭", callback_data=f"banpage_{total_pages-1}"))
+    
+    markup.add(*nav_buttons)
+    
+    # Второй ряд
+    row2 = []
+    if total_pages > 5:
+        row2.append(types.InlineKeyboardButton("🔍 К странице", callback_data="banpage_goto"))
+    row2.append(types.InlineKeyboardButton("📋 Все баны", callback_data="banlist_all"))
+    markup.add(*row2)
+    
+    # Третий ряд
+    markup.add(types.InlineKeyboardButton("🔎 Инфо по ID", callback_data="banpage_byid"))
+    
+    if reply_to:
+        bot.send_message(chat_id, text, parse_mode='HTML', reply_markup=markup, reply_to_message_id=reply_to)
+    else:
+        bot.send_message(chat_id, text, parse_mode='HTML', reply_markup=markup)
+
 @bot.message_handler(commands=['banlist'])
 def banlist(message):
     if message.chat.id != CHAT_ID:
@@ -723,18 +799,226 @@ def banlist(message):
         bot.reply_to(message, "📋 <b>Нет забаненных пользователей</b>", parse_mode='HTML')
         return
     
+    # Показываем первую страницу
+    show_banlist_page(message.chat.id, 0, message.message_id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('banpage_'))
+def handle_banpage(call):
+    if call.from_user.id not in ADMINS:
+        bot.answer_callback_query(call.id, "⛔ Нет прав", show_alert=True)
+        return
+    
+    action = call.data.replace('banpage_', '')
+    
+    if action == 'info':
+        bot.answer_callback_query(call.id, "Текущая страница", show_alert=False)
+        return
+    
+    if action == 'goto':
+        msg = bot.send_message(
+            call.message.chat.id,
+            "🔍 <b>Введите номер страницы:</b>\n\n"
+            "Отправьте команду:\n"
+            "<code>/banpage 3</code>",
+            parse_mode='HTML'
+        )
+        bot.answer_callback_query(call.id)
+        return
+    
+    if action == 'byid':
+        msg = bot.send_message(
+            call.message.chat.id,
+            "🔎 <b>Введите ID пользователя для просмотра бана:</b>\n\n"
+            "Отправьте команду:\n"
+            "<code>/baninfo 123456789</code>",
+            parse_mode='HTML'
+        )
+        bot.answer_callback_query(call.id)
+        return
+    
+    try:
+        page = int(action)
+        show_banlist_page(call.message.chat.id, page)
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        bot.answer_callback_query(call.id)
+    except ValueError:
+        bot.answer_callback_query(call.id, "❌ Ошибка навигации", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('baninfo_'))
+def baninfo(call):
+    user_id = int(call.data.split('_')[1])
+    ban_info = get_ban_info(user_id)
+    
+    if not ban_info:
+        bot.answer_callback_query(call.id, "Пользователь больше не в бане")
+        return
+    
+    user_name, username, reason, banned_by_name, banned_at = ban_info
+    
+    text = f"<b>👤 ИНФОРМАЦИЯ О БАНЕ</b>\n\n"
+    text += f"<b>Пользователь:</b> {user_name}\n"
+    text += f"<b>🆔 ID:</b> <code>{user_id}</code>\n"
+    if username:
+        text += f"<b>📢 Username:</b> @{username}\n"
+    text += f"<b>📝 Причина:</b> {reason}\n"
+    text += f"<b>👮 Забанил:</b> {banned_by_name}\n"
+    text += f"<b>⏰ Дата:</b> {banned_at}\n"
+    
     markup = types.InlineKeyboardMarkup()
-    for ban in bans[:10]:
+    markup.add(types.InlineKeyboardButton("🔓 Разбанить", callback_data=f"unban_{user_id}"))
+    markup.add(types.InlineKeyboardButton("📋 К банлисту", callback_data="banpage_0"))
+    
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode='HTML', reply_markup=markup)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('unban_'))
+def unban_from_button(call):
+    if call.from_user.id not in ADMINS:
+        bot.answer_callback_query(call.id, "⛔ У вас нет прав", show_alert=True)
+        return
+    
+    user_id = int(call.data.split('_')[1])
+    ban_info = get_ban_info(user_id)
+    
+    if remove_ban(user_id):
+        bot.answer_callback_query(call.id, "✅ Пользователь разбанен")
+        bot.edit_message_text(
+            f"✅ <b>Пользователь разбанен</b>\n\n👤 {ban_info[0] if ban_info else 'Пользователь'}\n🆔 ID: <code>{user_id}</code>",
+            call.message.chat.id,
+            call.message.message_id,
+            parse_mode='HTML'
+        )
+        try:
+            bot.send_message(user_id, "✅ <b>ʙы быᴧи ᴩᴀзбᴀнᴇны</b>\n\nᴛᴇᴨᴇᴩь ʙы ᴄноʙᴀ ʍожᴇᴛᴇ оᴛᴨᴩᴀʙᴧяᴛь ᴄообщᴇния ᴀдʍиниᴄᴛᴩᴀᴛоᴩᴀʍ.", parse_mode='HTML')
+        except:
+            pass
+    else:
+        bot.answer_callback_query(call.id, "❌ Ошибка при разбане")
+
+@bot.callback_query_handler(func=lambda call: call.data == "banlist_all")
+def banlist_all_compact(call):
+    if call.from_user.id not in ADMINS:
+        bot.answer_callback_query(call.id, "⛔ Нет прав", show_alert=True)
+        return
+    
+    bans = get_all_bans()
+    
+    if not bans:
+        bot.edit_message_text("📋 Нет забаненных пользователей", call.message.chat.id, call.message.message_id)
+        return
+    
+    text = f"<b>📋 ВСЕ ЗАБАНЕННЫЕ ({len(bans)})</b>\n"
+    text += "━━━━━━━━━━━━━━━━━━━━\n"
+    text += "<code>"
+    
+    for ban in bans:
         user_id, user_name, username, reason, banned_by, banned_at = ban
-        markup.add(types.InlineKeyboardButton(f"👤 {user_name[:20]}", callback_data=f"baninfo_{user_id}"))
+        text += f"{user_id:12} | {user_name[:20]:20} | {reason[:30]}\n"
+        
+        if len(text) > 3800:
+            text += "...</code>\n\n<i>(список обрезан из-за ограничений Telegram)</i>"
+            break
+    else:
+        text += "</code>"
     
-    if len(bans) > 10:
-        markup.add(types.InlineKeyboardButton("📄 Показать всех", callback_data="banlist_all"))
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("◀️ Назад к страницам", callback_data="banpage_0"))
     
-    bot.reply_to(message, 
-        f"📋 <b>Забаненные пользователи</b>\n\nВсего: {len(bans)}\nНажмите на имя для подробной информации",
-        parse_mode='HTML',
-        reply_markup=markup)
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode='HTML', reply_markup=markup)
+    bot.answer_callback_query(call.id)
+
+@bot.message_handler(commands=['banpage'])
+def banpage_command(message):
+    if message.chat.id != CHAT_ID:
+        return
+    
+    if message.from_user.id not in ADMINS:
+        bot.reply_to(message, "⛔ У вас нет прав")
+        return
+    
+    parts = message.text.split()
+    
+    if len(parts) < 2:
+        bans = get_all_bans()
+        total_pages = (len(bans) + BANS_PER_PAGE - 1) // BANS_PER_PAGE if bans else 1
+        bot.reply_to(
+            message,
+            f"📋 <b>Использование:</b>\n"
+            f"<code>/banpage &lt;номер&gt;</code>\n\n"
+            f"Всего страниц: {total_pages}\n"
+            f"Текущая страница: {banlist_current_page.get(message.chat.id, 0) + 1}",
+            parse_mode='HTML'
+        )
+        return
+    
+    try:
+        page_num = int(parts[1]) - 1
+        
+        bans = get_all_bans()
+        total_pages = (len(bans) + BANS_PER_PAGE - 1) // BANS_PER_PAGE if bans else 1
+        
+        if page_num < 0 or page_num >= total_pages:
+            bot.reply_to(
+                message,
+                f"❌ Неверный номер страницы.\n"
+                f"Доступны страницы: 1 - {total_pages}",
+                parse_mode='HTML'
+            )
+            return
+        
+        show_banlist_page(message.chat.id, page_num, message.message_id)
+        
+    except ValueError:
+        bot.reply_to(message, "❌ Введите число. Пример: <code>/banpage 3</code>", parse_mode='HTML')
+
+@bot.message_handler(commands=['baninfo'])
+def baninfo_command(message):
+    if message.chat.id != CHAT_ID:
+        return
+    
+    if message.from_user.id not in ADMINS:
+        bot.reply_to(message, "⛔ У вас нет прав")
+        return
+    
+    parts = message.text.split()
+    
+    if len(parts) < 2:
+        bot.reply_to(
+            message,
+            "📋 <b>Использование:</b>\n"
+            "<code>/baninfo &lt;user_id&gt;</code>\n\n"
+            "Пример: <code>/baninfo 123456789</code>",
+            parse_mode='HTML'
+        )
+        return
+    
+    try:
+        user_id = int(parts[1])
+        ban_info = get_ban_info(user_id)
+        
+        if not ban_info:
+            bot.reply_to(message, f"❌ Пользователь {user_id} не найден в банлисте", parse_mode='HTML')
+            return
+        
+        user_name, username, reason, banned_by_name, banned_at = ban_info
+        
+        text = f"<b>🔍 ИНФОРМАЦИЯ О БАНЕ</b>\n\n"
+        text += f"<b>👤 Пользователь:</b> {user_name}\n"
+        text += f"<b>🆔 ID:</b> <code>{user_id}</code>\n"
+        if username:
+            text += f"<b>📢 Username:</b> @{username}\n"
+        text += f"<b>📝 Причина:</b> {reason}\n"
+        text += f"<b>👮 Забанил:</b> {banned_by_name}\n"
+        text += f"<b>⏰ Дата:</b> {banned_at}\n"
+        
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔓 Разбанить", callback_data=f"unban_{user_id}"))
+        markup.add(types.InlineKeyboardButton("📋 К банлисту", callback_data="banpage_0"))
+        
+        bot.reply_to(message, text, parse_mode='HTML', reply_markup=markup)
+        
+    except ValueError:
+        bot.reply_to(message, "❌ Неверный формат ID. Введите число.", parse_mode='HTML')
 
 # ========== КОМАНДА /INFO ==========
 @bot.message_handler(commands=['info'])
@@ -743,7 +1027,6 @@ def info(message):
         bot.reply_to(message, f"🆔 Ваш ID: {message.from_user.id}")
     else:
         bot.reply_to(message, f"🆔 ID этого чата: {message.chat.id}")
-
 
 # ============== КОМАНДА ПАМЯТИ ==============
 
@@ -838,87 +1121,6 @@ def reply_to_user_by_quoting(message):
                 bot.reply_to(message, "❌ Не удалось найти ID пользователя")
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {e}")
-
-# ========== ОБРАБОТЧИКИ ДЛЯ КНОПОК БАНЛИСТА ==========
-@bot.callback_query_handler(func=lambda call: call.data.startswith('baninfo_'))
-def baninfo(call):
-    user_id = int(call.data.split('_')[1])
-    ban_info = get_ban_info(user_id)
-    
-    if not ban_info:
-        bot.answer_callback_query(call.id, "Пользователь больше не в бане")
-        return
-    
-    user_name, username, reason, banned_by_name, banned_at = ban_info
-    
-    text = f"<b>👤 ИНФОРМАЦИЯ О БАНЕ</b>\n\n"
-    text += f"<b>Пользователь:</b> {user_name}\n"
-    text += f"<b>🆔 ID:</b> <code>{user_id}</code>\n"
-    if username:
-        text += f"<b>📢 Username:</b> @{username}\n"
-    text += f"<b>📝 Причина:</b> {reason}\n"
-    text += f"<b>👮 Забанил:</b> {banned_by_name}\n"
-    text += f"<b>⏰ Дата:</b> {banned_at}\n"
-    
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("🔓 Разбанить", callback_data=f"unban_{user_id}"))
-    
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode='HTML', reply_markup=markup)
-    bot.answer_callback_query(call.id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('unban_'))
-def unban_from_button(call):
-    if call.from_user.id not in ADMINS:
-        bot.answer_callback_query(call.id, "⛔ У вас нет прав", show_alert=True)
-        return
-    
-    user_id = int(call.data.split('_')[1])
-    ban_info = get_ban_info(user_id)
-    
-    if remove_ban(user_id):
-        bot.answer_callback_query(call.id, "✅ Пользователь разбанен")
-        bot.edit_message_text(
-            f"✅ <b>Пользователь разбанен</b>\n\n👤 {ban_info[0] if ban_info else 'Пользователь'}\n🆔 ID: <code>{user_id}</code>",
-            call.message.chat.id,
-            call.message.message_id,
-            parse_mode='HTML'
-        )
-        try:
-            bot.send_message(user_id, "✅ <b>ʙы быᴧи ᴩᴀзбᴀнᴇны</b>\n\nᴛᴇᴨᴇᴩь ʙы ᴄноʙᴀ ʍожᴇᴛᴇ оᴛᴨᴩᴀʙᴧяᴛь ᴄообщᴇния ᴀдʍиниᴄᴛᴩᴀᴛоᴩᴀʍ.", parse_mode='HTML')
-        except:
-            pass
-    else:
-        bot.answer_callback_query(call.id, "❌ Ошибка при разбане")
-
-@bot.callback_query_handler(func=lambda call: call.data == "banlist_all")
-def banlist_all(call):
-    if call.from_user.id not in ADMINS:
-        bot.answer_callback_query(call.id, "⛔ Нет прав", show_alert=True)
-        return
-    
-    bans = get_all_bans()
-    
-    if not bans:
-        bot.edit_message_text("📋 Нет забаненных пользователей", call.message.chat.id, call.message.message_id)
-        return
-    
-    text = "<b>📋 ПОЛНЫЙ СПИСОК ЗАБАНЕННЫХ</b>\n\n"
-    for ban in bans:
-        user_id, user_name, username, reason, banned_by, banned_at = ban
-        text += f"👤 <b>{user_name}</b>\n"
-        text += f"🆔 ID: {user_id}\n"
-        if username:
-            text += f"📢 @{username}\n"
-        text += f"📝 {reason[:50]}\n"
-        text += f"⏰ {banned_at}\n"
-        text += f"━━━━━━━━━━━━━━━\n"
-        
-        if len(text) > 3500:
-            text += "\n... и другие"
-            break
-    
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode='HTML')
-    bot.answer_callback_query(call.id)
 
 # ========== ВЕБ-СЕРВЕР ДЛЯ RENDER ==========
 app = Flask('')
