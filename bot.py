@@ -214,7 +214,7 @@ def handle_text_message(message):
     if is_banned(user_id):
         ban_info = get_ban_info(user_id)
         reason = ban_info[2] if ban_info else "не указана"
-        bot.reply_to(message, f"🚫 Вы забанены...", parse_mode='HTML')
+        bot.reply_to(message, f"🚫 ʙы зᴀбᴀнᴇны\n\nʙы нᴇ ʍожᴇᴛᴇ оᴛᴨᴩᴀʙᴧяᴛь ᴄообщᴇния ᴀдʍиниᴄᴛᴩᴀᴛоᴩᴀʍ.\n\nᴨᴩичинᴀ: {reason}", parse_mode='HTML')
         return
     
     # Сохраняем текст и спрашиваем режим
@@ -239,7 +239,7 @@ def handle_media(message):
     if is_banned(user_id):
         ban_info = get_ban_info(user_id)
         reason = ban_info[2] if ban_info else "не указана"
-        bot.reply_to(message, f"🚫 Вы забанены...", parse_mode='HTML')
+        bot.reply_to(message, f"🚫 ʙы зᴀбᴀнᴇны\n\nʙы нᴇ ʍожᴇᴛᴇ оᴛᴨᴩᴀʙᴧяᴛь ᴄообщᴇния ᴀдʍиниᴄᴛᴩᴀᴛоᴩᴀʍ.\n\nᴨᴩичинᴀ: {reason}", parse_mode='HTML')
         return
     
     # Определяем, часть ли это альбома
@@ -585,7 +585,7 @@ def send_album_to_admins(data, mode):
         mode_text = "ᴨубᴧично" if mode == 'public' else "ᴀнониʍно"
         bot.send_message(
             user_id, 
-            f"⤿ Альбом из {len(messages)} файлов отправлен {mode_text}!\n\nКогда администратор ответит, вы получите уведомление."
+            f"⤿ ᴀᴧьбᴏʍ иɜ {len(messages)} ɸᴀйᴧᴏʙ ᴏᴛᴨᴩᴀʙᴧᴇн {mode_text}!\n\nᴋоᴦдᴀ ᴀдʍиниᴄᴛᴩᴀᴛоᴩ оᴛʙᴇᴛиᴛ, ʙы ᴨоᴧучиᴛᴇ уʙᴇдоʍᴧᴇниᴇ."
         )
     except Exception as e:
         print(f"Ошибка отправки подтверждения: {e}")
