@@ -27,8 +27,6 @@ user_choice = {}      # {user_id: mode}
 user_last_text = {}   # {user_id: {'text': str, 'mode': str, 'user_name': str, 'username': str}}
 user_media_timer = {} # {user_id: timer}
 user_text_timer = {}  # {user_id: timer}
-user_last_media = {}  # {user_id: [list of messages]} для ожидания текста
-user_media_waiting_text = {}  # {user_id: True/False}
 user_media_album_temp = {}  # {user_id: [list of messages]} для альбомов
 user_media_waiting_temp = {}  # {user_id: [list of messages]} для ожидания текста
 
@@ -369,7 +367,8 @@ def process_media_without_text(user_id):
     
     # Если нет выбора режима — спрашиваем
     if user_id not in user_choice:
-        user_media_waiting_temp[user_id] = messages
+        # Сохраняем сообщения в альбомное хранилище
+        user_media_album_temp[user_id] = messages
         ask_send_mode(user_id)
         return
     
