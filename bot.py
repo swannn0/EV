@@ -223,7 +223,16 @@ def handle_text_message(message):
         reason = ban_info[2] if ban_info else "не указана"
         bot.reply_to(message, f"🚫 ʙы зᴀбᴀнᴇны\n\nʙы нᴇ ʍожᴇᴛᴇ оᴛᴨᴩᴀʙᴧяᴛь ᴄообщᴇния ᴀдʍиниᴄᴛᴩᴀᴛоᴩᴀʍ.\n\nᴨᴩичинᴀ: {reason}", parse_mode='HTML')
         return
-    
+
+        # ========== ПОЛНЫЙ ЗАПРЕТ КОМАНД ==========
+    if message.text.startswith('/'):
+        bot.reply_to(
+            message,
+            "❌ <b>Отправка команд запрещена</b>\n\n"
+            "Пожалуйста, напишите обычное сообщение без '/'",
+            parse_mode='HTML'
+        )
+        return
     # Сохраняем текст и спрашиваем режим
     content_data = {
         'type': 'text',
